@@ -1,10 +1,9 @@
 # Unified VectorHub Platform — Architecture Design Decisions
 
 **Date:** 2026-08-14
-**Status:** Approved (design session complete; implementation not started)
-**Base spec:** `CLAUDE.md` (this document amends it — where they conflict, this document wins)
+**Status:** Approved (design session complete; implementation not started). Updated 2026-08-14: all five decisions have been **folded into `CLAUDE.md`**, which is now the authoritative operational spec.
 
-This document records the architecture decisions made during the pre-build design session for the Unified VectorHub Platform API. `CLAUDE.md` remains the operational spec; this document pins down the places where it was under-specified or internally tense, and enumerates the knock-on effects on the phased build plan.
+This document records the architecture decisions made during the pre-build design session for the Unified VectorHub Platform API. The decisions themselves now live inline in `CLAUDE.md` (Tenancy Matrix, hybrid contract, batch data path, drift policy, audit immutability); this document remains the **rationale and knock-on analysis** behind them — read it for depth when working a phase, especially Phases 3–6.
 
 **Operating context (drives every decision below):** the platform is a real SaaS product — external customers as tenants, tenant isolation is a **security boundary**, and backends may be cloud-managed (Qdrant Cloud, Weaviate Cloud, Zilliz) or self-hosted. Per the base spec, each backend name maps to exactly one configured instance (one client per backend, held for the app lifetime); per-tenant physical backend instances (`backend_instance_id`) remain out of scope for v1.
 
