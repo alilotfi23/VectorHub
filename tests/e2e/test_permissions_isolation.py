@@ -6,7 +6,10 @@ design doc requires — JWT (Bearer) and per-tenant API keys. Mirrors cases
 E1/E2/E3/E8 of the isolation design doc, adapted to a control-plane surface:
 indistinguishable data (identical collection names), fail-closed 404s,
 schema-level rejection of forged `tenant_id`, and a byte-identical negative
-control proving responses can't act as an existence oracle. See
+control proving responses can't act as an existence oracle. Plus key-death
+cases: a revoked or expired API key is rejected at authentication (401) on
+every path — own tenant, foreign tenant, and nonexistent names — with
+byte-identical bodies, so a dead key carries no tenant identity at all. See
 docs/superpowers/specs/2026-08-14-tenant-isolation-tests-design.md.
 """
 
@@ -269,3 +272,65 @@ async def test_e8_negative_control_no_existence_oracle(
     # And A, for whom the collection genuinely exists, sees grants fine.
     a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
     assert a_list.status_code == 200
+
+
+KILL_METHODS = ("revoke", "expire")
+
+
+@pytest.mark.parametrize("kill", KILL_METHODS)
+async def test_killed_key_loses_all_access_immediately(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], kill: str
+) -> None:
+    """A revoked or expired API key is rejected at authentication (401) the
+    moment it dies — on its own tenant's resources, on another tenant's
+    resources, and on a name that exists nowhere, with byte-identical error
+    bodies. A dead key carries no tenant identity at all, so it can neither
+    reach foreign data nor act as an existence oracle."""
+    reg_a = await _register(client, "orga")
+    reg_b = await _register(client, "orgb")
+    tenant_a = reg_a["user"]["tenant_id"]
+    tenant_b = reg_b["user"]["tenant_id"]
+    await _seed_collection(session_factory, tenant_a, "a-only")
+    await _seed_collection(session_factory, tenant_b, "b-only")
+
+    created = await client.post(
+        f"{API}/api-keys",
+        json={
+            "name": f"iso-{uuid.uuid4().hex[:10]}",
+            "role": "owner",
+            **({"expires_at": "2020-01-01T00:00:00Z"} if kill == "expire" else {}),
+        },
+        headers=_auth_headers(reg_a["access_token"]),
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    key_headers = {"X-API-Key": body["key"]}
+
+    if kill == "revoke":
+        # Prove the key was live a moment ago.
+        before = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
+        assert before.status_code == 200
+        revoked = await client.delete(
+            f"{API}/api-keys/{body['id']}", headers=_auth_headers(reg_a["access_token"])
+        )
+        assert revoked.status_code == 204
+    else:
+        # An expiry in the past makes the key dead on arrival (the schema
+        # deliberately doesn't forbid it — a TTL may elapse in transit).
+        assert body["expires_at"] is not None
+
+    # Dead on every path — own tenant, foreign tenant, nowhere — with
+    # byte-identical 401s: the key carries no tenant identity anymore.
+    own = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
+    other = await client.get(f"{API}/collections/b-only/permissions", headers=key_headers)
+    nowhere = await client.get(
+        f"{API}/collections/{uuid.uuid4().hex}/permissions", headers=key_headers
+    )
+    for resp in (own, other, nowhere):
+        assert resp.status_code == 401, resp.text
+        assert resp.json()["error_code"] == "AUTH_INVALID_CREDENTIALS"
+    assert own.json() == other.json() == nowhere.json()
+
+    # Repeated presentation stays dead — no revivification window.
+    again = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
+    assert again.status_code == 401

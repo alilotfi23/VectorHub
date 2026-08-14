@@ -152,3 +152,40 @@ async def test_revoke_key_and_cross_tenant_isolation(db: AsyncSession) -> None:
         )
     )
     assert row is not None
+
+
+async def test_key_death_is_immediate_and_a_property_of_the_key(db: AsyncSession) -> None:
+    """Key death is enforced at the authentication gate the moment it
+    happens, and is a property of the key itself: authenticate is a pure
+    key-hash lookup with no caller context, so a revoked key resolves to
+    None immediately (and stays dead on every repeated presentation),
+    while a live key always resolves to its own tenant's principal — it
+    can never be bent into a foreign identity. Revocation is a flag, not
+    deletion: the row survives (auditable) but can't be replayed into a
+    Principal."""
+    _, owner = await _owner(db)
+    svc = ApiKeyService(db)
+
+    live, live_plaintext = await svc.create_key(owner, name="live")
+    doomed, doomed_plaintext = await svc.create_key(owner, name="doomed")
+
+    # Both live right now.
+    assert await svc.authenticate(doomed_plaintext) is not None
+
+    # Immediate: the very next authenticate after revoke is None.
+    await svc.revoke_key(owner, key_id=doomed.id)
+    assert await svc.authenticate(doomed_plaintext) is None
+
+    # Global and stable: repeated presentation stays dead, and the survivor
+    # still resolves to its own tenant — never a foreign identity.
+    assert await svc.authenticate(doomed_plaintext) is None
+    resolved = await svc.authenticate(live_plaintext)
+    assert resolved is not None
+    assert resolved.tenant_id == owner.tenant_id
+    assert resolved.api_key_id == live.id
+
+    # The revoked flag — not row removal — is what gates access, so the
+    # key's lingering row can't be replayed into a Principal.
+    stored = await db.get(ApiKey, doomed.id)
+    assert stored is not None and stored.revoked is True
+    assert await svc.authenticate(doomed_plaintext) is None
