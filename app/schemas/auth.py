@@ -77,6 +77,9 @@ class MeResponse(BaseModel):
 
 class TenantCreateRequest(StrictRequest):
     name: str = Field(min_length=1, max_length=255)
+    # Optional QPS cap enforced by the rate-limit middleware; None = no
+    # tenant-level cap (the platform route default still applies).
+    rate_limit_qps: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class TenantResponse(BaseModel):

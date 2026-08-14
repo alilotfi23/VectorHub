@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
+import app.middleware.rate_limit as rate_limit_module
 from app.core.cache import close_redis
 from app.core.config import get_settings
 
@@ -91,8 +92,16 @@ async def session_factory(
 ) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
     engine = create_async_engine(db_url, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    yield factory
-    await engine.dispose()
+    # The rate-limit middleware resolves tenant/key rate config through its
+    # own session factory; point it at the test DB so every authenticated
+    # request doesn't attempt the default (dead) engine. Restored on teardown.
+    original_factory = rate_limit_module.session_factory
+    rate_limit_module.session_factory = factory
+    try:
+        yield factory
+    finally:
+        rate_limit_module.session_factory = original_factory
+        await engine.dispose()
 
 
 @pytest.fixture

@@ -33,7 +33,9 @@ class TenantService:
         self._session = session
         self._audit = AuditService(session)
 
-    async def create_tenant(self, actor: Principal, *, name: str) -> Tenant:
+    async def create_tenant(
+        self, actor: Principal, *, name: str, rate_limit_qps: int | None = None
+    ) -> Tenant:
         if not actor.is_platform_admin:
             raise AppError(
                 ErrorCode.AUTH_INSUFFICIENT_SCOPE,
@@ -44,7 +46,7 @@ class TenantService:
             raise AppError(
                 ErrorCode.TENANT_ALREADY_EXISTS, "Tenant name is already taken", status_code=409
             )
-        tenant = Tenant(name=name)
+        tenant = Tenant(name=name, rate_limit_qps=rate_limit_qps)
         self._session.add(tenant)
         await self._session.flush()
         await self._audit.record(

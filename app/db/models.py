@@ -30,6 +30,9 @@ class Tenant(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255), unique=True)
+    # Optional QPS cap enforced by the rate-limit middleware; None = no
+    # tenant-level cap (the route default still applies).
+    rate_limit_qps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

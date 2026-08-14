@@ -30,7 +30,9 @@ async def create_tenant(
     principal: Principal = Depends(require_platform_admin),
     session: AsyncSession = Depends(get_session),
 ) -> TenantResponse:
-    tenant = await TenantService(session).create_tenant(principal, name=body.name)
+    tenant = await TenantService(session).create_tenant(
+        principal, name=body.name, rate_limit_qps=body.rate_limit_qps
+    )
     return TenantResponse.model_validate(tenant)
 
 

@@ -54,6 +54,19 @@ class Settings(BaseSettings):
     # newer than this means a live worker.
     worker_heartbeat_ttl_seconds: int = 30
 
+    # --- Rate limiting (Phase 6 pull-forward) ---
+    # Platform-wide QPS ceiling per route, plus per-route overrides keyed by
+    # "METHOD /path" (e.g. {"POST /api/v1/auth/login": 5}). Tenant caps come
+    # from tenants.rate_limit_qps and API-key caps from api_keys.rate_limit_qps
+    # when set; the most restrictive applicable limit wins per request.
+    rate_limit_default_qps: float = 100.0
+    rate_limit_route_qps: dict[str, float] = {}
+    rate_limit_burst_multiplier: float = 2.0
+    # TTL for cached tenant/key rate-config read-throughs (Redis miss ->
+    # Postgres -> cached, including negative entries). Bounds how long a
+    # rate change takes to apply.
+    rate_limit_config_cache_ttl_seconds: int = 300
+
     # "*" for local dev; explicit comma-separated allow-list for staging/prod.
     cors_allowed_origins: str = "*"
 

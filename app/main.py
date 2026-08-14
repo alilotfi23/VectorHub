@@ -10,6 +10,7 @@ from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
 from app.db.session import get_session
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.schemas.health import HealthReport
 from app.services.health_service import check_health
 
@@ -26,6 +27,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(RateLimitMiddleware)
 app.add_exception_handler(AppError, error_response_handler)
 
 app.include_router(auth.router, prefix="/api/v1")
