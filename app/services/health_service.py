@@ -35,8 +35,8 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.metrics import health_check_outcome
 from app.schemas.health import HealthReport
+from app.workers.heartbeat import WORKER_HEARTBEAT_PREFIX
 
-WORKER_HEARTBEAT_PREFIX = "vhk:worker:heartbeat:"
 _CHECK_TIMEOUT_SECONDS = 5.0
 
 CheckStatus = Literal["ok", "down"]

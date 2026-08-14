@@ -20,6 +20,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=8.1.0",
     "opentelemetry-sdk>=1.24",
     "opentelemetry-exporter-otlp-proto-http>=1.24",
+    "arq>=0.28.0",
 ]
 
 [dependency-groups]
@@ -73,6 +74,11 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app", "tests", "alembic"]
+
+[[tool.mypy.overrides]]
+# testcontainers ships no type stubs (import-untyped under strict).
+module = ["testcontainers.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

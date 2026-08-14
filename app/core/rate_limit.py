@@ -89,7 +89,9 @@ async def consume_token(redis: Redis | None, key: str, rate: float) -> tuple[boo
         return True, 0
     capacity = _bucket_capacity(rate)
     try:
-        result = await redis.eval(
+        # redis-py 5's stubs type eval as Union[Awaitable[Any], Any] (a
+        # sync/async union); it is async here.
+        result = await redis.eval(  # type: ignore[misc]
             _TOKEN_BUCKET_LUA,
             1,
             key,

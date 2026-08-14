@@ -68,10 +68,13 @@ class Settings(BaseSettings):
     # long a *valid* resolution stays cached. Postgres remains the source of
     # truth — the cache is an optimization, never a gate.
     auth_cache_ttl_seconds: int = 300
-    # Worker heartbeat freshness for GET /health's workers check. The Phase 6
-    # arq worker writes vhk:worker:heartbeat:<id> = <epoch-ts>; any heartbeat
+    # Worker heartbeat freshness for GET /health's workers check. The arq
+    # worker writes vhk:worker:heartbeat:<id> = <epoch-ts>; any heartbeat
     # newer than this means a live worker.
     worker_heartbeat_ttl_seconds: int = 30
+    # How often a running worker refreshes its heartbeat key. Kept well under
+    # worker_heartbeat_ttl_seconds so transient hiccups can't age the key out.
+    worker_heartbeat_interval_seconds: int = 10
 
     # --- Rate limiting (Phase 6 pull-forward) ---
     # Platform-wide QPS ceiling per route, plus per-route overrides keyed by

@@ -15,7 +15,7 @@ from app.admin import app as admin_app
 from app.core.cache import get_redis
 from app.core.config import get_settings
 from app.db.session import get_session
-from app.services.health_service import WORKER_HEARTBEAT_PREFIX
+from app.workers.heartbeat import WORKER_HEARTBEAT_PREFIX
 
 
 class _HealthyAdapter:
@@ -74,6 +74,27 @@ async def test_health_ok_all_dependencies(client: AsyncClient, redis_url: str) -
     assert body["checks"]["redis"] == "ok"
     assert body["checks"]["workers"] == "ok"
     assert body["checks"]["adapters"] == {}
+
+
+async def test_worker_heartbeat_writer_feeds_workers_check(
+    client: AsyncClient, redis_url: str
+) -> None:
+    """The worker-side heartbeat writer (app.workers.heartbeat) is the
+    producer the health check consumes: after write_heartbeat, /health
+    reports workers ok — the 'check goes green in real deployments' proof."""
+    from app.workers.heartbeat import write_heartbeat
+
+    redis = get_redis()
+    assert redis is not None
+    await write_heartbeat(redis, worker_id="integration-worker")
+    try:
+        resp = await client.get("/health")
+    finally:
+        await _clear_heartbeats()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["checks"]["workers"] == "ok"
 
 
 async def test_health_degraded_without_worker_heartbeat(
