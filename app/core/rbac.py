@@ -53,6 +53,11 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
 }
 
 
+def role_rank(role: str) -> int:
+    """0 (viewer) .. 3 (owner); unknown roles rank 0."""
+    return _ROLE_RANK.get(role, 0)
+
+
 def has_permission(principal: Principal, permission: Permission) -> bool:
     if principal.is_platform_admin:
         return True

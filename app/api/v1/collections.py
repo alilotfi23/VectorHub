@@ -1,0 +1,38 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_principal, require_collection_permission
+from app.core.rbac import Permission
+from app.core.security import Principal
+from app.db.models import Collection
+from app.db.session import get_session
+from app.schemas.collections import (
+    CollectionPermissionResponse,
+    CollectionPermissionUpdateRequest,
+)
+from app.services.collection_service import CollectionService
+
+# Phase 3 adds create/delete/list/get/info on this router; today it carries
+# the resource-level RBAC surface (PATCH /{name}/permissions).
+
+router = APIRouter(prefix="/collections", tags=["collections"])
+
+
+@router.patch("/{name}/permissions", response_model=CollectionPermissionResponse)
+async def update_collection_permissions(
+    name: str,
+    body: CollectionPermissionUpdateRequest,
+    collection: Collection = Depends(require_collection_permission(Permission.TENANT_MANAGE)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> CollectionPermissionResponse:
+    grant = await CollectionService(session).grant_permission(
+        principal, name=name, user_id=body.user_id, role=body.role
+    )
+    return CollectionPermissionResponse(
+        collection_id=grant.collection_id,
+        collection_name=collection.name,
+        user_id=grant.user_id,
+        role=grant.permission,
+        created_at=grant.created_at,
+    )

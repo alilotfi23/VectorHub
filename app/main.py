@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import api_keys, auth, tenants
+from app.api.v1 import api_keys, auth, collections, tenants
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
 
@@ -14,6 +14,7 @@ app.add_exception_handler(AppError, error_response_handler)
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
+app.include_router(collections.router, prefix="/api/v1")
 
 if settings.cors_allowed_origins.strip() == "*":
     allow_origins = ["*"]

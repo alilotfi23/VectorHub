@@ -7,7 +7,7 @@ headers themselves, so a future jti-revocation check (Phase 6, Redis) slots
 in at exactly one place.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, has_permission
 from app.core.security import Principal, decode_access_token
+from app.db.models import Collection
 from app.db.session import get_session
 from app.services.api_key_service import ApiKeyService
+from app.services.collection_service import CollectionService
 
 API_KEY_HEADER = "X-API-Key"
 
@@ -61,3 +63,23 @@ def require_platform_admin(principal: Principal = Depends(get_current_principal)
             ErrorCode.AUTH_INSUFFICIENT_SCOPE, "Platform admin required", status_code=403
         )
     return principal
+
+
+def require_collection_permission(permission: Permission) -> Callable[..., Awaitable[Collection]]:
+    """Dependency factory for collection-scoped routes.
+
+    Resolves the collection named in the path within the caller's tenant
+    (a missing OR foreign collection raises COLLECTION_NOT_FOUND — no
+    existence oracle) and checks `permission` against the principal's
+    tenant role elevated by any resource-level grant on that collection.
+    The resolved Collection is injected so route handlers need not re-query.
+    """
+
+    async def checker(
+        name: str,
+        principal: Principal = Depends(get_current_principal),
+        session: AsyncSession = Depends(get_session),
+    ) -> Collection:
+        return await CollectionService(session).check_access(principal, permission, name=name)
+
+    return checker
