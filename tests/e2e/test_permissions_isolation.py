@@ -274,6 +274,70 @@ async def test_e8_negative_control_no_existence_oracle(
     assert a_list.status_code == 200
 
 
+@pytest.mark.parametrize("auth", AUTH_STYLES)
+async def test_forged_tenant_id_in_path_cannot_reach_foreign_members(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
+) -> None:
+    """B — JWT or API key — putting A's tenant id in the path gets the
+    no-oracle TENANT_NOT_FOUND on every member-surface op (GET/POST/PATCH
+    on members, plus GET /tenants/{id}), byte-identical to a nonexistent
+    id, and A's member roles (the tenant-level grants) survive untouched.
+    The path-level twin of E3, which forges tenant_id in the body."""
+    reg_a = await _register(client, "orga")
+    reg_b = await _register(client, "orgb")
+    headers_a = await _principal_headers(client, reg_a, auth)
+    headers_b = await _principal_headers(client, reg_b, auth)
+    tenant_a = reg_a["user"]["tenant_id"]
+    tenant_b = reg_b["user"]["tenant_id"]
+    assert tenant_a != tenant_b
+
+    # A provisions a member and grants a role on the tenant (editor).
+    member_a = await _provision_member(client, headers_a, tenant_a)
+    promoted = await client.patch(
+        f"{API}/tenants/{tenant_a}/members/{member_a['id']}",
+        json={"role": "editor"},
+        headers=headers_a,
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["role"] == "editor"
+
+    # B's read of A's member directory (the grant state): 404, no oracle.
+    foreign_list = await client.get(f"{API}/tenants/{tenant_a}/members", headers=headers_b)
+    assert foreign_list.status_code == 404
+    assert foreign_list.json()["error_code"] == "TENANT_NOT_FOUND"
+
+    # B forges A's tenant id in the path: every write op 404s too.
+    for method, path, body in (
+        (
+            "POST",
+            f"{API}/tenants/{tenant_a}/members",
+            {"email": _unique_email("intruder"), "password": "password-123"},
+        ),
+        (
+            "PATCH",
+            f"{API}/tenants/{tenant_a}/members/{member_a['id']}",
+            {"role": "viewer"},
+        ),
+        ("GET", f"{API}/tenants/{tenant_a}", None),
+    ):
+        resp = await client.request(method, path, json=body, headers=headers_b)
+        assert resp.status_code == 404, f"{method} {path}: {resp.status_code} {resp.text}"
+        assert resp.json()["error_code"] == "TENANT_NOT_FOUND"
+
+    # Byte-identical to a nonexistent tenant id: no existence oracle.
+    missing = await client.get(f"{API}/tenants/{uuid.uuid4().hex}/members", headers=headers_b)
+    assert missing.status_code == 404
+    assert missing.json() == foreign_list.json()
+
+    # A's roles survive untouched: still the owner and the editor member.
+    a_list = await client.get(f"{API}/tenants/{tenant_a}/members", headers=headers_a)
+    assert a_list.status_code == 200
+    body = a_list.json()
+    assert body["total"] == 2  # no intruder was added
+    by_id = {m["id"]: m["role"] for m in body["items"]}
+    assert by_id[member_a["id"]] == "editor"  # B's demotion never landed
+
+
 KILL_METHODS = ("revoke", "expire")
 
 
