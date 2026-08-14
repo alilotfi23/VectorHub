@@ -14,10 +14,13 @@ from typing import Any
 
 import yaml
 
+from app.core.config import get_settings
+
 ROOT = Path(__file__).resolve().parents[2]
 MONITORING = ROOT / "deploy" / "monitoring"
 COMPOSE = MONITORING / "docker-compose.yml"
 PROMETHEUS_CONFIG = MONITORING / "prometheus" / "prometheus.yml"
+K8S_PROMETHEUS = MONITORING / "prometheus" / "prometheus.k8s.yml"
 DATASOURCES = MONITORING / "grafana" / "provisioning" / "datasources" / "prometheus.yml"
 DASHBOARD_PROVIDER = MONITORING / "grafana" / "provisioning" / "dashboards" / "vhk.yml"
 
@@ -116,7 +119,7 @@ def test_prometheus_config_loads_rules_and_forwards_alerts() -> None:
     jobs = {j["job_name"]: j for j in pc["scrape_configs"]}
     vhk = jobs["vhk"]
     assert vhk["metrics_path"] == "/metrics"
-    assert vhk["static_configs"][0]["targets"] == ["app:9091"], (
+    assert vhk["static_configs"][0]["targets"] == [f"app:{get_settings().admin_port}"], (
         "vhk job must scrape the app's admin port"
     )
     assert "prometheus" in jobs, "self-scrape job must exist"
@@ -143,4 +146,60 @@ def test_grafana_provisioning_points_at_compose_services() -> None:
     grafana_vols = _load(COMPOSE)["services"]["grafana"]["volumes"]
     assert any(v.endswith("/var/lib/grafana/dashboards:ro") for v in grafana_vols), (
         "dashboard provider path must match the compose mount"
+    )
+
+
+def test_k8s_prometheus_config_uses_annotation_contract() -> None:
+    """The k8s scrape config discovers the app pod by annotation
+    (prometheus.io/scrape=true, path, port) instead of a static target — the
+    standard Prometheus-on-k8s recipe, with the pod's k8s labels kept for
+    grouping."""
+    pc = _load(K8S_PROMETHEUS)
+    assert "/etc/prometheus/alerts.yml" in pc["rule_files"], (
+        "k8s config must load the same shipped alerts.yml"
+    )
+    targets = pc["alerting"]["alertmanagers"][0]["static_configs"][0]["targets"]
+    assert targets == ["alertmanager:9093"]
+
+    jobs = {j["job_name"]: j for j in pc["scrape_configs"]}
+    vhk = jobs["vhk"]
+    sd = vhk["kubernetes_sd_configs"][0]
+    assert sd["role"] == "pod", "must discover pods"
+    assert "static_configs" not in vhk, "k8s job must not use a static target"
+
+    relabels = vhk["relabel_configs"]
+    keeps = [r for r in relabels if r["action"] == "keep"]
+    assert keeps and keeps[0]["regex"] == "true", "must keep only prometheus.io/scrape=true pods"
+    actions = [r["action"] for r in relabels]
+    assert "replace" in actions and "labelmap" in actions
+    for r in relabels:
+        if r["action"] == "replace" and r.get("target_label") == "__metrics_path__":
+            assert "prometheus_io_path" in r["source_labels"][0], (
+                "metrics path must come from the path annotation"
+            )
+        if r["action"] == "replace" and r.get("target_label") == "__address__":
+            assert "prometheus_io_port" in r["source_labels"][1], (
+                "address must be rewritten to the annotated port"
+            )
+    assert "prometheus" in jobs, "self-scrape job must exist"
+
+
+def test_k8s_scrape_contract_matches_admin_port_setting() -> None:
+    """One source of truth: the config flag that exposes /metrics on the
+    internal admin port (Settings.admin_port) must be what the k8s annotation
+    contract and the compose static target both reference. Changing the flag
+    forces updating the contract — a scrape port that drifted from the app's
+    actual listener would silently collect nothing."""
+    admin_port = get_settings().admin_port
+
+    k8s_text = K8S_PROMETHEUS.read_text(encoding="utf-8")
+    assert f'prometheus.io/port:   "{admin_port}"' in k8s_text, (
+        "k8s annotation contract must document the admin port"
+    )
+    assert 'prometheus.io/scrape: "true"' in k8s_text
+    assert 'prometheus.io/path:   "/metrics"' in k8s_text
+
+    compose_targets = _load(PROMETHEUS_CONFIG)["scrape_configs"][0]["static_configs"][0]["targets"]
+    assert compose_targets == [f"app:{admin_port}"], (
+        "compose static target must match the admin port setting"
     )

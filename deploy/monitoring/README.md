@@ -123,6 +123,39 @@ used by the main docker-compose (Phase 8). Running the trio standalone against
 an API on the host? Point `prometheus/prometheus.yml` at
 `host.docker.internal:9091` instead.
 
+## Kubernetes scraping contract
+
+In-cluster Prometheus discovers the VectorHub pod by **annotation** — the
+standard Prometheus-on-k8s recipe. The pod must carry:
+
+| Annotation | Value | Meaning |
+| --- | --- | --- |
+| `prometheus.io/scrape` | `"true"` | Opt the pod into scraping |
+| `prometheus.io/path` | `"/metrics"` | The metrics endpoint (admin app) |
+| `prometheus.io/port` | `"9091"` | **Must equal `ADMIN_PORT`** (`Settings.admin_port`) |
+
+`prometheus/prometheus.k8s.yml` ships the matching scrape config
+(`kubernetes_sd_configs`, `role: pod`, honoring those annotations via the
+keep/path/port relabel recipes) — put it in a ConfigMap as the base of the
+Prometheus `--config.file`. The contract is test-pinned: the annotation port
+and the compose static target must both equal `Settings.admin_port`, so the
+flag that exposes `/metrics` on the internal port is the single source of
+truth for every scrape path.
+
+Two non-negotiables for the app deployment:
+
+- Set `ADMIN_HOST=0.0.0.0` — k8s probes/scrapers reach the pod by IP, not
+  localhost, and the admin app binds `127.0.0.1` by default.
+- Never expose the admin port via Service/Ingress/NodePort/LoadBalancer —
+  `/metrics` and `/health` are unauthenticated by design; the security
+  boundary is that the port is unreachable outside the pod network.
+
+The Grafana dashboard (`platform.json`) is provisioned the same way in k8s as
+in compose: a ConfigMap with the dashboard JSON + the provisioning files from
+`grafana/provisioning/` (datasource → the in-cluster Prometheus service, e.g.
+`http://prometheus.monitoring.svc:9090`), mounted at
+`/etc/grafana/provisioning` and the dashboards path.
+
 ## Threshold rationale (adjust per SLA)
 
 | Rule | Threshold | Why |

@@ -1,0 +1,59 @@
+# VectorHub Prometheus config for Kubernetes (example).
+# Drop this into a ConfigMap as the base of --config.file in the Prometheus
+# StatefulSet/Deployment. Same rules and alerting as the compose config
+# (prometheus.yml), but the vhk job discovers the app pod by ANNOTATION
+# instead of a static target.
+#
+# --- The scraping contract (the VectorHub pod must carry these) ---
+#   prometheus.io/scrape: "true"
+#   prometheus.io/path:   "/metrics"
+#   prometheus.io/port:   "9091"     # must equal ADMIN_PORT (Settings.admin_port)
+#
+# /metrics lives ONLY on the admin app (app/admin.py) at ADMIN_HOST:ADMIN_PORT.
+# In-cluster probes/scrapers reach it because k8s sets ADMIN_HOST=0.0.0.0; the
+# admin port must never be exposed via Service/Ingress/NodePort/LoadBalancer.
+# Annotations are honored via the relabel recipes below (Prometheus docs'
+# standard annotation-based discovery).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The VectorHub app pod, discovered via prometheus.io/* annotations.
+  - job_name: vhk
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Keep only pods explicitly opted in.
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      # Scrape the annotated path (default would be /metrics anyway).
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      # Scrape the annotated port: rewrite <ip>:<admin-port>.
+      - source_labels:
+          [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      # Keep the pod's k8s labels as Prometheus labels for grouping/filtering.
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+
+  # Self-scrape.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
