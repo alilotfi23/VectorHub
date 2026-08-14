@@ -9,7 +9,9 @@ from app.api.v1 import api_keys, auth, collections, tenants
 from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
+from app.core.metrics import metrics_response
 from app.db.session import get_session
+from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.schemas.health import HealthReport
 from app.services.health_service import check_health
@@ -27,7 +29,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+# Metrics counts every request, including rate-limit 429s — it must wrap the
+# rate-limit middleware, so it is registered last (outermost).
 app.add_middleware(RateLimitMiddleware)
+app.add_middleware(MetricsMiddleware)
 app.add_exception_handler(AppError, error_response_handler)
 
 app.include_router(auth.router, prefix="/api/v1")
@@ -60,3 +65,11 @@ async def health(response: Response, session: AsyncSession = Depends(get_session
     report = await check_health(session)
     response.status_code = 503 if report.status == "down" else 200
     return report
+
+
+@app.get("/metrics", tags=["infra"])
+async def metrics() -> Response:
+    """Prometheus text-format exposition of the platform's counters
+    (request counts, health-check outcomes). Scraped by infra probes.
+    """
+    return metrics_response()

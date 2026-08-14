@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.registry import registry
 from app.core.cache import get_redis
 from app.core.config import get_settings
+from app.core.metrics import health_check_outcome
 from app.schemas.health import HealthReport
 
 WORKER_HEARTBEAT_PREFIX = "vhk:worker:heartbeat:"
@@ -50,6 +51,13 @@ async def check_health(session: AsyncSession) -> HealthReport:
     redis: CheckStatus = await _check_redis()
     workers: CheckStatus = await _check_workers(redis_ok=redis == "ok")
     adapters: dict[str, str] = await _check_adapters()
+
+    # Record probe outcomes so /metrics can show each check's ok/down rates.
+    health_check_outcome("postgres", postgres)
+    health_check_outcome("redis", redis)
+    health_check_outcome("workers", workers)
+    for name, adapter_status in adapters.items():
+        health_check_outcome(f"adapter:{name}", adapter_status)
 
     if postgres != "ok" or redis != "ok":
         status: Literal["ok", "degraded", "down"] = "down"
