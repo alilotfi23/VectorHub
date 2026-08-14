@@ -28,8 +28,10 @@ from app.main import app
 from tests.e2e.helpers import (
     API,
     AUTH_STYLES,
+    _assert_dead_credential_401,
     _assert_no_existence_oracle,
     _auth_headers,
+    _dead_credential_401,
     _no_oracle_404,
     _principal_headers,
     _provision_member,
@@ -332,20 +334,27 @@ async def test_killed_key_loses_all_access_immediately(
         assert body["expires_at"] is not None
 
     # Dead on every path — own tenant, foreign tenant, nowhere — with
-    # byte-identical 401s: the key carries no tenant identity anymore.
-    own = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
-    other = await client.get(f"{API}/collections/b-only/permissions", headers=key_headers)
-    nowhere = await client.get(
-        f"{API}/collections/{uuid.uuid4().hex}/permissions", headers=key_headers
+    # byte-identical 401s by construction: the key carries no tenant
+    # identity anymore, so it can't act as an existence oracle either.
+    await _assert_dead_credential_401(
+        client,
+        paths=[
+            f"{API}/collections/a-only/permissions",
+            f"{API}/collections/b-only/permissions",
+            f"{API}/collections/{uuid.uuid4().hex}/permissions",
+        ],
+        headers=key_headers,
+        expected="AUTH_INVALID_CREDENTIALS",
     )
-    for resp in (own, other, nowhere):
-        assert resp.status_code == 401, resp.text
-        assert resp.json()["error_code"] == "AUTH_INVALID_CREDENTIALS"
-    assert own.json() == other.json() == nowhere.json()
 
     # Repeated presentation stays dead — no revivification window.
-    again = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
-    assert again.status_code == 401
+    await _dead_credential_401(
+        client,
+        "GET",
+        f"{API}/collections/a-only/permissions",
+        key_headers,
+        expected="AUTH_INVALID_CREDENTIALS",
+    )
 
 
 async def test_revoked_key_loses_tenant_role_immediately(
@@ -383,11 +392,20 @@ async def test_revoked_key_loses_tenant_role_immediately(
     # The very next request is 401 even on the read surface a viewer would
     # pass — the role is gone entirely at authentication, before any
     # resolve-once gate can consult it.
-    read_after = await client.get(f"{API}/tenants/{tenant_id}", headers=key_headers)
-    assert read_after.status_code == 401
-    assert read_after.json()["error_code"] == "AUTH_INVALID_CREDENTIALS"
-    grants_after = await client.get(f"{API}/collections/own/permissions", headers=key_headers)
-    assert grants_after.status_code == 401
+    await _dead_credential_401(
+        client,
+        "GET",
+        f"{API}/tenants/{tenant_id}",
+        key_headers,
+        expected="AUTH_INVALID_CREDENTIALS",
+    )
+    await _dead_credential_401(
+        client,
+        "GET",
+        f"{API}/collections/own/permissions",
+        key_headers,
+        expected="AUTH_INVALID_CREDENTIALS",
+    )
 
 
 async def test_logged_out_access_token_dies_immediately(
@@ -421,17 +439,19 @@ async def test_logged_out_access_token_dies_immediately(
     assert out.status_code == 204, out.text
 
     # Dead immediately on every path — own tenant, foreign tenant, nowhere —
-    # with byte-identical 401 AUTH_TOKEN_REVOKED bodies: rejected at the auth
-    # boundary before any resolve-once gate can consult it.
-    own = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
-    other = await client.get(f"{API}/collections/b-only/permissions", headers=headers_a)
-    nowhere = await client.get(
-        f"{API}/collections/{uuid.uuid4().hex}/permissions", headers=headers_a
+    # with byte-identical 401 AUTH_TOKEN_REVOKED bodies by construction:
+    # rejected at the auth boundary before any resolve-once gate can consult
+    # it, so a dead token can't act as an existence oracle.
+    await _assert_dead_credential_401(
+        client,
+        paths=[
+            f"{API}/collections/a-only/permissions",
+            f"{API}/collections/b-only/permissions",
+            f"{API}/collections/{uuid.uuid4().hex}/permissions",
+        ],
+        headers=headers_a,
+        expected="AUTH_TOKEN_REVOKED",
     )
-    for resp in (own, other, nowhere):
-        assert resp.status_code == 401, resp.text
-        assert resp.json()["error_code"] == "AUTH_TOKEN_REVOKED"
-    assert own.json() == other.json() == nowhere.json()
 
     # Revocation is per-jti: a fresh login issues a new jti that works...
     relogin = await client.post(

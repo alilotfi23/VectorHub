@@ -5,13 +5,17 @@ credentials, seed registry rows, provision members) plus the no-oracle
 probe discipline every isolation case must follow. Phase 3's
 vector-isolation e2e cases should import from here instead of redefining —
 the no-existence-oracle contract is enforced by construction in
-_assert_no_existence_oracle, so a new case can't forget half of it.
+_assert_no_existence_oracle, so a new case can't forget half of it. The
+dead-credential variants (_dead_credential_401 /
+_assert_dead_credential_401) do the same for revoked, expired, and
+logged-out credentials.
 
 The helpers assume the ASGI app + session override are wired via the
 `client` fixture in tests/e2e/conftest.py (migrated real Postgres).
 """
 
 import uuid
+from collections.abc import Sequence
 from typing import Any, cast
 
 from httpx import AsyncClient
@@ -132,3 +136,43 @@ async def _assert_no_existence_oracle(
         client, method, missing_path, headers, expected=expected, body=body
     )
     assert real == missing
+
+
+async def _dead_credential_401(
+    client: AsyncClient,
+    method: str,
+    path: str,
+    headers: dict[str, str],
+    *,
+    expected: str,
+) -> dict[str, Any]:
+    """Fire one dead-credential probe: assert the fail-closed 401 with the
+    expected error_code and return the body so callers can compare probes
+    byte-for-byte. A revoked/expired/logged-out credential is rejected at
+    the auth boundary before any resource resolution, so the body is
+    identical whatever the target — every isolation 401 assertion flows
+    through here."""
+    resp = await client.request(method, path, headers=headers)
+    assert resp.status_code == 401, f"{method} {path}: {resp.status_code} {resp.text}"
+    assert resp.json()["error_code"] == expected
+    return cast(dict[str, Any], resp.json())
+
+
+async def _assert_dead_credential_401(
+    client: AsyncClient,
+    *,
+    paths: Sequence[str],
+    headers: dict[str, str],
+    expected: str,
+    method: str = "GET",
+) -> None:
+    """Prove a dead credential can't act as an existence oracle: every
+    target — own tenant, foreign tenant, a name that exists nowhere — must
+    yield the same 401 with the expected error_code, byte-identical by
+    construction (all probes flow through _dead_credential_401 and their
+    bodies are compared here)."""
+    bodies = [
+        await _dead_credential_401(client, method, path, headers, expected=expected)
+        for path in paths
+    ]
+    assert all(b == bodies[0] for b in bodies[1:])
