@@ -296,7 +296,7 @@ async def test_member_ops_cross_tenant_404(client: AsyncClient) -> None:
         (
             "POST",
             f"{API}/tenants/{foreign_id}/members",
-            {"email": _unique("x@example.com"), "password": "password-123"},
+            {"email": _unique_email("x"), "password": "password-123"},
         ),
     ]:
         resp = await client.request(method, path, json=body, headers=headers)
