@@ -40,7 +40,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://app:app@localhost:5432/vectorhub"
     migrator_database_url: str = "postgresql+asyncpg://migrator:migrator@localhost:5432/vectorhub"
 
-    redis_url: str = "redis://localhost:6379/0"
+    # None = cache disabled (Postgres-fallback auth path). Compose/dev set
+    # REDIS_URL explicitly; an unset var must never silently point at a
+    # dead default endpoint.
+    redis_url: str | None = None
+    # TTL for cached auth lookups (API-key principal, jti deny-list marker).
+    # Revocation invalidates immediately regardless; the TTL only bounds how
+    # long a *valid* resolution stays cached. Postgres remains the source of
+    # truth — the cache is an optimization, never a gate.
+    auth_cache_ttl_seconds: int = 300
 
     # "*" for local dev; explicit comma-separated allow-list for staging/prod.
     cors_allowed_origins: str = "*"

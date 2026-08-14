@@ -14,12 +14,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.session import get_session
 from app.main import app
-from tests.integration.conftest import db, db_url, session_factory  # noqa: F401
+from tests.integration.conftest import (  # noqa: F401
+    db,
+    db_url,
+    redis_url,
+    session_factory,
+)
 
 
 @pytest.fixture
 async def client(
     session_factory: async_sessionmaker[AsyncSession],  # noqa: F811 — pytest fixture name, shadows the conftest re-export
+    redis_url: str,  # noqa: F811 — cache-on for the e2e layer (the production path)
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:

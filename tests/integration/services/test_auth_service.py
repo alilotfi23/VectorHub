@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_redis, is_jti_revoked
 from app.core.config import get_settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.security import Principal, decode_access_token, hash_refresh_token
@@ -207,6 +208,22 @@ async def test_logout_purges_stale_deny_list_rows(db: AsyncSession) -> None:
     assert await db.scalar(select(RevokedToken).where(RevokedToken.jti == stale_jti)) is None
     row = await db.scalar(select(RevokedToken).where(RevokedToken.jti == decoded.jti))
     assert row is not None
+
+
+async def test_logout_marks_jti_revoked_in_redis(db: AsyncSession, redis_url: str) -> None:
+    """Logout writes the deny-list marker to Redis (write-through), so the
+    auth boundary rejects the token from the cache without a DB hit."""
+    email = _unique("redis-logout@example.com")
+    _, pair = await AuthService(db).register(
+        email=email, password="password-123", tenant_name=_unique("acme")
+    )
+    decoded = decode_access_token(pair.access_token)
+    await AuthService(db).logout(
+        pair.refresh_token, access_jti=decoded.jti, actor=decoded.principal
+    )
+    redis = get_redis()
+    assert redis is not None
+    assert await is_jti_revoked(redis, decoded.jti) is True
 
 
 async def test_me_returns_user(db: AsyncSession) -> None:

@@ -13,6 +13,7 @@ from fastapi import Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_redis, is_jti_revoked, mark_jti_revoked
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, has_permission
 from app.core.security import Principal, decode_access_token
@@ -32,10 +33,19 @@ async def get_current_principal(
     principal: Principal
     if auth_header.lower().startswith("bearer "):
         decoded = decode_access_token(auth_header[7:].strip())
-        # Jti deny-list: logout revokes the access token immediately. The
-        # check is one indexed lookup; Phase 6's Redis cache fronts this
-        # table (Postgres remains the source of truth).
-        if await session.scalar(select(RevokedToken.id).where(RevokedToken.jti == decoded.jti)):
+        # Jti deny-list: logout revokes the access token immediately. Redis
+        # fronts the table (positive markers only, written write-through at
+        # logout and read-through here); Postgres remains the source of truth
+        # and the fallback.
+        redis = get_redis()
+        revoked = redis is not None and await is_jti_revoked(redis, decoded.jti)
+        if not revoked and await session.scalar(
+            select(RevokedToken.id).where(RevokedToken.jti == decoded.jti)
+        ):
+            revoked = True
+            if redis is not None:
+                await mark_jti_revoked(redis, decoded.jti)
+        if revoked:
             raise AppError(ErrorCode.AUTH_TOKEN_REVOKED, "Access token revoked", status_code=401)
         principal = decoded.principal
         request.state.token_jti = decoded.jti

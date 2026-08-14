@@ -1,13 +1,26 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import api_keys, auth, collections, tenants
+from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
 
 settings = get_settings()
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # The Redis client is built lazily on first use (see get_redis); the
+    # lifespan only owns its teardown.
+    yield
+    await close_redis()
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 app.add_exception_handler(AppError, error_response_handler)
 

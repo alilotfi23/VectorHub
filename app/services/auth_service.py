@@ -14,6 +14,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_redis, mark_jti_revoked
 from app.core.config import get_settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.security import (
@@ -162,6 +163,11 @@ class AuthService:
                     revoked_at=now,
                 )
             )
+            # Write-through: the boundary can reject the token from the cache
+            # without a DB hit; Postgres remains the source of truth.
+            redis = get_redis()
+            if redis is not None:
+                await mark_jti_revoked(redis, access_jti)
         # Idempotent: revoking an already-revoked or unknown token is a no-op.
         await self._session.execute(
             update(RefreshToken)

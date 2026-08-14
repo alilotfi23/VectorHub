@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_cached_api_key_principal, get_redis
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission
 from app.core.security import Principal, hash_api_key
@@ -191,6 +192,32 @@ async def test_key_death_is_immediate_and_a_property_of_the_key(db: AsyncSession
     stored = await db.get(ApiKey, doomed.id)
     assert stored is not None and stored.revoked is True
     assert await svc.authenticate(doomed_plaintext) is None
+
+
+async def test_principal_cache_invalidated_on_revoke(db: AsyncSession, redis_url: str) -> None:
+    """With the Redis cache engaged, a revoked key dies immediately on the
+    cached path: revoke invalidates the cached principal, so the next
+    authenticate is a fresh DB lookup (revoked -> None), never a cache hit."""
+    _, owner = await _owner(db)
+    svc = ApiKeyService(db)
+    key, plaintext = await svc.create_key(owner, name="cached")
+    key_hash = hash_api_key(plaintext)
+
+    # First authenticate populates the cache.
+    principal = await svc.authenticate(plaintext)
+    assert principal is not None
+    redis = get_redis()
+    assert redis is not None
+    cached = await get_cached_api_key_principal(redis, key_hash)
+    assert cached is not None
+    assert cached.api_key_id == key.id
+
+    # Revoke drops the cache entry immediately...
+    await svc.revoke_key(owner, key_id=key.id)
+    assert await get_cached_api_key_principal(redis, key_hash) is None
+    # ...so the next authenticate falls through to Postgres and sees the
+    # revoked flag: no revivification window on the cached path.
+    assert await svc.authenticate(plaintext) is None
 
 
 async def test_revoked_key_role_unreachable_through_resolve_once_gates(db: AsyncSession) -> None:

@@ -8,8 +8,9 @@ Access tokens are stateless JWTs (HS256) carrying user/tenant/role claims;
 short TTL (~15 min). Refresh tokens are opaque, stored hashed (sha256) in
 Postgres with rotation — never sent to the client twice. Access-token
 revocation is a Postgres-backed jti deny-list (revoked_tokens) checked at
-the auth boundary; Redis caching of that list lands in Phase 6 with the
-rest of the Redis infrastructure.
+the auth boundary, fronted by Redis positive markers (app.core.cache) with
+Postgres as the source of truth; the API-key principal cache lives there
+too, invalidated on revoke.
 """
 
 import hashlib

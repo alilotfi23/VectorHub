@@ -11,6 +11,12 @@ from datetime import UTC, datetime
 from sqlalchemy import BigInteger, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import (
+    cache_api_key_principal,
+    get_cached_api_key_principal,
+    get_redis,
+    invalidate_api_key_principal,
+)
 from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import Page, paginate
 from app.core.rbac import VALID_ROLES, Permission, has_permission
@@ -100,6 +106,11 @@ class ApiKeyService:
         if key is None:
             raise AppError(ErrorCode.API_KEY_NOT_FOUND, "API key not found", status_code=404)
         await self._session.execute(update(ApiKey).where(ApiKey.id == key.id).values(revoked=True))
+        # Invalidation-on-revoke: the cached principal must die the moment
+        # the key does, or a cache hit would resurrect a revoked key.
+        redis = get_redis()
+        if redis is not None:
+            await invalidate_api_key_principal(redis, key.key_hash)
         await self._audit.record(
             tenant_id=actor.tenant_id,
             actor_id=actor.user_id,
@@ -110,21 +121,34 @@ class ApiKeyService:
         await self._session.commit()
 
     async def authenticate(self, plaintext: str) -> Principal | None:
-        """Resolve a presented key to a Principal, or None if invalid."""
+        """Resolve a presented key to a Principal, or None if invalid.
+
+        Cache-first: a cached principal short-circuits the DB lookup. The
+        cache is populated only for *valid* keys (never for revoked/expired
+        results) and its TTL is bounded by the key's own expiry, so a hit is
+        always safe; revoke invalidates explicitly.
+        """
+        key_hash = hash_api_key(plaintext)
+        redis = get_redis()
+        if redis is not None:
+            cached = await get_cached_api_key_principal(redis, key_hash)
+            if cached is not None:
+                return cached
         key = await self._session.scalar(
-            select(ApiKey).where(
-                ApiKey.key_hash == hash_api_key(plaintext), ApiKey.revoked.is_(False)
-            )
+            select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.revoked.is_(False))
         )
         if key is None:
             return None
         if key.expires_at is not None and key.expires_at < datetime.now(UTC):
             return None
-        return Principal(
+        principal = Principal(
             tenant_id=key.tenant_id,
             role=key.role,
             api_key_id=key.id,
         )
+        if redis is not None:
+            await cache_api_key_principal(redis, key_hash, principal, expires_at=key.expires_at)
+        return principal
 
     def _require_manage(self, actor: Principal) -> None:
         if not has_permission(actor, Permission.TENANT_MANAGE):
