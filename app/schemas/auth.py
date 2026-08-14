@@ -1,21 +1,13 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 # --- Auth ---
 
 
-# Lightweight email shape check (no email-validator dependency — PyPI was
-# unreachable when this landed). Swap to pydantic EmailStr if/when the extra
-# is installable; behavior (422 on malformed addresses) is identical.
-_EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-
-
 class RegisterRequest(BaseModel):
-    email: str = Field(
-        min_length=3, max_length=255, pattern=_EMAIL_PATTERN, examples=["alice@example.com"]
-    )
+    email: EmailStr = Field(min_length=3, max_length=255, examples=["alice@example.com"])
     password: str = Field(min_length=8, max_length=128, description="Minimum 8 characters")
     tenant_name: str = Field(
         min_length=1, max_length=255, description="New tenant created for this user"
@@ -23,7 +15,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=255, pattern=_EMAIL_PATTERN)
+    email: EmailStr = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1)
 
 
@@ -108,3 +100,34 @@ class ApiKeyResponse(BaseModel):
 
 class ApiKeyCreatedResponse(ApiKeyResponse):
     key: str  # plaintext — shown exactly once, never retrievable again
+
+
+# --- Tenant members ---
+
+# Users belong to exactly one tenant, so "invite" = an admin/owner provisions
+# a member account inside the tenant with an initial password. True
+# multi-membership (one user, several tenants) would require a membership
+# table and is out of scope for v1.
+
+MemberRole = Literal["owner", "admin", "editor", "viewer"]
+
+
+class MemberCreateRequest(BaseModel):
+    email: EmailStr = Field(min_length=3, max_length=255)
+    password: str = Field(
+        min_length=8, max_length=128, description="Initial password set by the inviting admin"
+    )
+    role: MemberRole = "viewer"  # least-privilege default
+
+
+class MemberRoleUpdateRequest(BaseModel):
+    role: MemberRole
+
+
+class MemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    email: str
+    role: str
+    created_at: datetime

@@ -92,3 +92,191 @@ async def test_platform_admin_can_get_any_tenant(db: AsyncSession) -> None:
     user_b, _ = await _register(db, "orgb")
     tenant = await TenantService(db).get_tenant(admin, tenant_id=user_b.tenant_id)
     assert tenant.id == user_b.tenant_id
+
+
+# --- Members ---
+
+
+async def test_add_member_creates_user_in_tenant(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    member = await TenantService(db).add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("dev@example.com"),
+        password="password-123",
+        role="editor",
+    )
+    assert member.tenant_id == owner.tenant_id
+    assert member.role == "editor"
+    assert member.password_hash != "password-123"  # hashed at rest
+
+    row = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "member.added", AuditLog.resource_id == member.id)
+    )
+    assert row is not None
+    assert row.actor_id == owner.user_id
+    assert row.details == {"email": member.email, "role": "editor"}
+
+
+async def test_add_member_duplicate_email(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    email = _unique("dup@example.com")
+    svc = TenantService(db)
+    await svc.add_member(
+        owner, tenant_id=owner.tenant_id, email=email, password="password-123", role="viewer"
+    )
+    with pytest.raises(AppError) as exc:
+        await svc.add_member(
+            owner, tenant_id=owner.tenant_id, email=email, password="password-123", role="viewer"
+        )
+    assert exc.value.code == ErrorCode.AUTH_EMAIL_TAKEN
+
+
+async def test_add_member_email_in_other_tenant(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    user_b, _ = await _register(db, "orgb")
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).add_member(
+            owner_a,
+            tenant_id=owner_a.tenant_id,
+            email=user_b.email,
+            password="password-123",
+            role="viewer",
+        )
+    assert exc.value.code == ErrorCode.AUTH_EMAIL_TAKEN
+
+
+async def test_add_member_cross_tenant_hidden(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    user_b, _ = await _register(db, "orgb")
+    # Acting on a foreign tenant looks like the tenant doesn't exist.
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).add_member(
+            owner_a,
+            tenant_id=user_b.tenant_id,
+            email=_unique("x@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+    assert exc.value.code == ErrorCode.TENANT_NOT_FOUND
+
+
+async def test_add_member_requires_manage(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).add_member(
+            editor,
+            tenant_id=owner.tenant_id,
+            email=_unique("v@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+    assert exc.value.status_code == 403
+
+
+async def test_list_members(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+    await svc.add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("d1@example.com"),
+        password="password-123",
+        role="editor",
+    )
+    await svc.add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("d2@example.com"),
+        password="password-123",
+        role="viewer",
+    )
+    members = await svc.list_members(owner, tenant_id=owner.tenant_id)
+    assert {m.role for m in members} == {"owner", "editor", "viewer"}
+    assert len(members) == 3
+
+
+async def test_list_members_cross_tenant_hidden(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    user_b, _ = await _register(db, "orgb")
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).list_members(owner_a, tenant_id=user_b.tenant_id)
+    assert exc.value.code == ErrorCode.TENANT_NOT_FOUND
+
+
+async def test_change_member_role(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+    member = await svc.add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("d@example.com"),
+        password="password-123",
+        role="viewer",
+    )
+    updated = await svc.change_member_role(
+        owner, tenant_id=owner.tenant_id, user_id=member.id, role="admin"
+    )
+    assert updated.role == "admin"
+
+    row = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "member.role_changed", AuditLog.resource_id == member.id
+        )
+    )
+    assert row is not None
+    assert row.details == {"from_role": "viewer", "to_role": "admin"}
+
+
+async def test_change_member_role_foreign_user(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    user_b, _ = await _register(db, "orgb")
+    # A user from another tenant is not a member here: looks like not-found.
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).change_member_role(
+            owner_a, tenant_id=owner_a.tenant_id, user_id=user_b.id, role="viewer"
+        )
+    assert exc.value.code == ErrorCode.TENANT_MEMBER_NOT_FOUND
+
+
+async def test_last_owner_cannot_be_demoted(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    assert owner.user_id is not None
+    with pytest.raises(AppError) as exc:
+        await TenantService(db).change_member_role(
+            owner, tenant_id=owner.tenant_id, user_id=owner.user_id, role="viewer"
+        )
+    assert exc.value.code == ErrorCode.TENANT_LAST_OWNER
+    assert exc.value.status_code == 409
+
+
+async def test_second_owner_can_be_demoted(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+    co_owner = await svc.add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("co@example.com"),
+        password="password-123",
+        role="owner",
+    )
+    updated = await svc.change_member_role(
+        owner, tenant_id=owner.tenant_id, user_id=co_owner.id, role="admin"
+    )
+    assert updated.role == "admin"
+
+
+async def test_member_can_login_with_provisioned_password(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    member = await TenantService(db).add_member(
+        owner,
+        tenant_id=owner.tenant_id,
+        email=_unique("login@example.com"),
+        password="password-123",
+        role="viewer",
+    )
+    user, _ = await AuthService(db).login(email=member.email, password="password-123")
+    assert user.id == member.id
+    assert user.role == "viewer"

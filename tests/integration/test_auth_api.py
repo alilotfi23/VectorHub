@@ -17,6 +17,11 @@ def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
+def _unique_email(local: str = "user") -> str:
+    # Suffix goes in the local part: EmailStr validates the domain strictly.
+    return f"{local}-{uuid.uuid4().hex[:10]}@example.com"
+
+
 @pytest.fixture
 async def client(
     session_factory: async_sessionmaker[AsyncSession],
@@ -40,7 +45,7 @@ async def _register(
     tenant_name: str | None = None,
 ) -> dict[str, Any]:
     body = {
-        "email": email or _unique(f"{tag}@example.com"),
+        "email": email or _unique_email(tag),
         "password": "password-123",
         "tenant_name": tenant_name or _unique(tag),
     }
@@ -82,7 +87,7 @@ async def test_login_failures_are_indistinguishable(client: AsyncClient) -> None
     )
     unknown = await client.post(
         f"{API}/auth/login",
-        json={"email": _unique("nobody@example.com"), "password": "password-123"},
+        json={"email": _unique_email("nobody"), "password": "password-123"},
     )
     for resp in (wrong, unknown):
         assert resp.status_code == 401
@@ -123,7 +128,7 @@ async def test_me_requires_valid_credential(client: AsyncClient) -> None:
 async def test_register_validation(client: AsyncClient) -> None:
     short = await client.post(
         f"{API}/auth/register",
-        json={"email": _unique("a@example.com"), "password": "short", "tenant_name": "t"},
+        json={"email": _unique_email("a"), "password": "short", "tenant_name": "t"},
     )
     assert short.status_code == 422
     bad_email = await client.post(
@@ -179,8 +184,8 @@ async def test_api_key_management_requires_admin(
     client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
     reg = await _register(client)
-    # Member-management endpoints don't exist yet, so create a viewer in the
-    # owner's tenant directly and mint a viewer access token.
+    # Provision a viewer member directly in the DB and mint a viewer token;
+    # using the member-management API would cover the same ground twice.
     async with session_factory() as session:
         from app.core.security import hash_password
         from app.db.models import User
@@ -233,6 +238,84 @@ async def test_tenant_access_and_isolation(client: AsyncClient) -> None:
     assert missing.json()["error_code"] == "TENANT_NOT_FOUND"
 
 
+async def test_member_management_flow(client: AsyncClient) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    tenant_id = reg["user"]["tenant_id"]
+
+    created = await client.post(
+        f"{API}/tenants/{tenant_id}/members",
+        json={"email": _unique_email("dev"), "password": "password-123", "role": "editor"},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    member = created.json()
+    assert member["role"] == "editor"
+    assert "password" not in member
+
+    listed = await client.get(f"{API}/tenants/{tenant_id}/members", headers=headers)
+    assert listed.status_code == 200
+    assert {m["role"] for m in listed.json()} == {"owner", "editor"}
+
+    # The provisioned member can log in and read the tenant.
+    member_login = await client.post(
+        f"{API}/auth/login", json={"email": member["email"], "password": "password-123"}
+    )
+    assert member_login.status_code == 200
+    member_headers = _auth_headers(member_login.json()["access_token"])
+    read = await client.get(f"{API}/tenants/{tenant_id}", headers=member_headers)
+    assert read.status_code == 200
+
+    # An editor cannot manage members.
+    deny = await client.post(
+        f"{API}/tenants/{tenant_id}/members",
+        json={"email": _unique_email("x"), "password": "password-123"},
+        headers=member_headers,
+    )
+    assert deny.status_code == 403
+    assert deny.json()["error_code"] == "AUTH_INSUFFICIENT_SCOPE"
+
+    # The owner demotes the member.
+    changed = await client.patch(
+        f"{API}/tenants/{tenant_id}/members/{member['id']}",
+        json={"role": "viewer"},
+        headers=headers,
+    )
+    assert changed.status_code == 200
+    assert changed.json()["role"] == "viewer"
+
+
+async def test_member_ops_cross_tenant_404(client: AsyncClient) -> None:
+    reg = await _register(client)
+    other = await _register(client, "other")
+    headers = _auth_headers(reg["access_token"])
+    foreign_id = other["user"]["tenant_id"]
+
+    for method, path, body in [
+        ("GET", f"{API}/tenants/{foreign_id}/members", None),
+        (
+            "POST",
+            f"{API}/tenants/{foreign_id}/members",
+            {"email": _unique("x@example.com"), "password": "password-123"},
+        ),
+    ]:
+        resp = await client.request(method, path, json=body, headers=headers)
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["error_code"] == "TENANT_NOT_FOUND"
+
+
+async def test_last_owner_demotion_409(client: AsyncClient) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    resp = await client.patch(
+        f"{API}/tenants/{reg['user']['tenant_id']}/members/{reg['user']['id']}",
+        json={"role": "viewer"},
+        headers=headers,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error_code"] == "TENANT_LAST_OWNER"
+
+
 async def test_create_tenant_requires_platform_admin(client: AsyncClient) -> None:
     reg = await _register(client)
     headers = _auth_headers(reg["access_token"])
@@ -244,7 +327,7 @@ async def test_create_tenant_requires_platform_admin(client: AsyncClient) -> Non
 async def test_platform_admin_can_create_tenant(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    admin_email = _unique("platform-admin@example.com")
+    admin_email = _unique_email("platform-admin")
     monkeypatch.setenv("BOOTSTRAP_PLATFORM_ADMIN_EMAILS", admin_email)
     get_settings.cache_clear()
     try:

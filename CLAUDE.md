@@ -98,6 +98,9 @@ GET    /api/v1/capabilities                     # backend feature matrix
 
 POST   /api/v1/tenants                          # platform-admin only
 GET    /api/v1/tenants/{id}
+GET    /api/v1/tenants/{id}/members              # tenant directory (viewer+)
+POST   /api/v1/tenants/{id}/members              # provision a member account (admin/owner; initial password set by inviter)
+PATCH  /api/v1/tenants/{id}/members/{user_id}    # change a member's role (admin/owner; last owner cannot be demoted)
 
 POST   /api/v1/collections                      # body includes `backend` (weaviate|qdrant|milvus|chroma)
 GET    /api/v1/collections
@@ -158,7 +161,7 @@ All error responses use the standard `{error_code, message, details}` shape (see
 
 - `AUTH_*` — e.g. `AUTH_INVALID_CREDENTIALS`, `AUTH_TOKEN_EXPIRED`, `AUTH_TOKEN_REVOKED`, `AUTH_INSUFFICIENT_SCOPE`, `AUTH_EMAIL_TAKEN`
 - `API_KEY_*` — e.g. `API_KEY_NOT_FOUND`
-- `TENANT_*` — e.g. `TENANT_NOT_FOUND`, `TENANT_ALREADY_EXISTS`, `TENANT_QUOTA_EXCEEDED`
+- `TENANT_*` — e.g. `TENANT_NOT_FOUND`, `TENANT_ALREADY_EXISTS`, `TENANT_MEMBER_NOT_FOUND`, `TENANT_LAST_OWNER`, `TENANT_QUOTA_EXCEEDED`
 - `COLLECTION_*` — e.g. `COLLECTION_NOT_FOUND`, `COLLECTION_ALREADY_EXISTS`, `COLLECTION_BACKEND_UNAVAILABLE`, `REQUIRES_REINDEX`, `REINDEX_NOT_IMPLEMENTED`
 - `VECTOR_*` — e.g. `VECTOR_NOT_FOUND`, `VECTOR_DIMENSION_MISMATCH`, `VECTOR_DIMENSION_EXCEEDED`, `BATCH_SIZE_EXCEEDED`, `TOP_K_EXCEEDED`, `VECTOR_SPARSE_REQUIRED` (hybrid requested without sparse input/support on Qdrant/Milvus)
 - `JOB_*` — e.g. `JOB_NOT_FOUND`, `JOB_FAILED`, `JOB_PAYLOAD_INVALID` (whole-file validation failure on a batch job)
@@ -254,7 +257,7 @@ When a session starts, work on the next unchecked phase below unless told otherw
 
 _Update this section at the end of each phase. Newest entry on top._
 
-- **2026-08-14** — Phase 2 complete. Auth & RBAC: bcrypt hashing behind a swap-friendly wrapper (passlib dropped — unmaintained + incompatible with bcrypt ≥ 4.1; deviation recorded), HS256 JWT access tokens, opaque refresh tokens stored hashed with atomic rotation (replay reads as revoked), register/login/refresh/logout/me, tenant model wiring (register provisions tenant + owner; platform-admin bootstrap via `BOOTSTRAP_PLATFORM_ADMIN_EMAILS`), tenant-scoped API keys (hashed at rest, plaintext shown once, per-key role, admin/owner manage), role→permission matrix + `require_permission`/`require_platform_admin` dependencies, `Principal` derived only from credentials, audit rows for tenant/API-key writes, 3 new taxonomy codes (`AUTH_EMAIL_TAKEN`, `TENANT_ALREADY_EXISTS`, `API_KEY_NOT_FOUND`). 73 tests green (unit + real-Postgres integration + ASGI API). Note: pytest-asyncio now uses a session-scoped event loop (pooled engine across tests); email validated by pattern pending `email-validator` (PyPI unreachable at build time). 9 commits.
+- **2026-08-14** — Phase 2 complete. Auth & RBAC: bcrypt hashing behind a swap-friendly wrapper (passlib dropped — unmaintained + incompatible with bcrypt ≥ 4.1; deviation recorded), HS256 JWT access tokens, opaque refresh tokens stored hashed with atomic rotation (replay reads as revoked), register/login/refresh/logout/me, tenant model wiring (register provisions tenant + owner; platform-admin bootstrap via `BOOTSTRAP_PLATFORM_ADMIN_EMAILS`), tenant-scoped API keys (hashed at rest, plaintext shown once, per-key role, admin/owner manage), role→permission matrix + `require_permission`/`require_platform_admin` dependencies, `Principal` derived only from credentials, audit rows for tenant/API-key writes, 3 new taxonomy codes (`AUTH_EMAIL_TAKEN`, `TENANT_ALREADY_EXISTS`, `API_KEY_NOT_FOUND`). 73 tests green (unit + real-Postgres integration + ASGI API). Note: pytest-asyncio now uses a session-scoped event loop (pooled engine across tests); email validated with pydantic `EmailStr` (email-validator added once PyPI was reachable). 9 commits.
 
 - **2026-08-14** — Phase 1 complete. Scaffolded app/ structure; uv/ruff/mypy/pytest/pre-commit toolchain (uv 0.12.4 installed); pydantic-settings config + .env.example; FastAPI skeleton with CORS and /health; complete error taxonomy enum; SQLAlchemy 2.0 async control-plane models (tenants, users, api_keys, refresh_tokens, collections with opaque physical_name, collection_permissions, audit_log, jobs); Alembic initial migration with two-role provisioning (app/migrator) + all-role audit_log guard trigger, verified against a real Postgres via testcontainers (15 tests, all green). 7 commits.
 

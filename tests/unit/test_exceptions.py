@@ -35,6 +35,8 @@ def test_taxonomy_covers_required_codes() -> None:
         "API_KEY_NOT_FOUND",
         "TENANT_NOT_FOUND",
         "TENANT_ALREADY_EXISTS",
+        "TENANT_MEMBER_NOT_FOUND",
+        "TENANT_LAST_OWNER",
         "TENANT_QUOTA_EXCEEDED",
         "COLLECTION_NOT_FOUND",
         "COLLECTION_ALREADY_EXISTS",
