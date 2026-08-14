@@ -9,12 +9,15 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 from redis.asyncio import Redis as AsyncRedis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from testcontainers.core.container import DockerContainer
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
 import app.middleware.rate_limit as rate_limit_module
 from app.core.cache import close_redis
 from app.core.config import get_settings
+
+CHROMA_IMAGE = "chromadb/chroma:1.5.9"  # pinned to the installed client version
 
 MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
 APP_ROLE_PASSWORD = "app_test_password"
@@ -102,6 +105,47 @@ async def session_factory(
     finally:
         rate_limit_module.session_factory = original_factory
         await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+async def chroma_url() -> AsyncGenerator[str, None]:
+    """Chroma server testcontainer (image pinned to the installed client).
+
+    Lazy: only starts when a test requests it (collection/vector suites). The
+    process singleton registry otherwise points at the settings default, so
+    suites that never touch a vector backend pay no Docker cost.
+    """
+    with DockerContainer(CHROMA_IMAGE).with_exposed_ports(8000) as container:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(8000)}"
+        # Startup-race guard (same pattern as the redis fixture): poll the
+        # server heartbeat until it answers.
+        import httpx
+
+        for _ in range(60):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{url}/api/v2/heartbeat", timeout=2)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        else:
+            raise RuntimeError("Chroma testcontainer did not become ready in time")
+        yield url
+
+
+@pytest.fixture(scope="session")
+async def chroma_backend(chroma_url: str) -> AsyncGenerator[None, None]:
+    """Point the process-wide 'chroma' adapter at the test container (the
+    built-in registered at import uses the settings default). Restores the
+    default on teardown."""
+    from app.adapters.chroma_adapter import ChromaAdapter
+    from app.adapters.registry import registry
+
+    registry.register("chroma", ChromaAdapter, url=chroma_url)
+    yield
+    registry.register("chroma", ChromaAdapter)
 
 
 @pytest.fixture
