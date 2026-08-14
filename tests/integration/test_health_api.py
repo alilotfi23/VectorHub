@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.adapters.milvus_adapter import MilvusAdapter
 from app.adapters.qdrant_adapter import QdrantAdapter
 from app.adapters.registry import registry
 from app.adapters.weaviate_adapter import WeaviateAdapter
@@ -38,12 +39,13 @@ async def client(
         async with session_factory() as session:
             yield session
 
-    # Point the qdrant/weaviate built-ins at guaranteed-dead URLs so the
-    # adapters map is deterministic here (the integration layer may or may not
-    # have their session-scoped containers running, and the machine may have
-    # local dev servers on the default ports).
+    # Point the qdrant/weaviate/milvus built-ins at guaranteed-dead URLs so
+    # the adapters map is deterministic here (the integration layer may or may
+    # not have their session-scoped containers running, and the machine may
+    # have local dev servers on the default ports).
     registry.register("qdrant", QdrantAdapter, url="http://127.0.0.1:1")
     registry.register("weaviate", WeaviateAdapter, url="http://127.0.0.1:1")
+    registry.register("milvus", MilvusAdapter, url="http://127.0.0.1:1")
     admin_app.dependency_overrides[get_session] = override_get_session
     transport = ASGITransport(app=admin_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -51,6 +53,7 @@ async def client(
     admin_app.dependency_overrides.clear()
     registry.register("qdrant", QdrantAdapter)
     registry.register("weaviate", WeaviateAdapter)
+    registry.register("milvus", MilvusAdapter)
 
 
 async def _write_heartbeat(*, ts: float | None = None) -> None:
@@ -89,7 +92,12 @@ async def test_health_ok_all_dependencies(
     assert body["checks"]["postgres"] == "ok"
     assert body["checks"]["redis"] == "ok"
     assert body["checks"]["workers"] == "ok"
-    assert body["checks"]["adapters"] == {"chroma": "ok", "qdrant": "down", "weaviate": "down"}
+    assert body["checks"]["adapters"] == {
+        "chroma": "ok",
+        "milvus": "down",
+        "qdrant": "down",
+        "weaviate": "down",
+    }
 
 
 async def test_worker_heartbeat_writer_feeds_workers_check(
@@ -163,6 +171,7 @@ async def test_health_reports_adapter_status(
         "broken": "down",
         "chroma": "ok",
         "good": "ok",
+        "milvus": "down",
         "qdrant": "down",
         "weaviate": "down",
     }

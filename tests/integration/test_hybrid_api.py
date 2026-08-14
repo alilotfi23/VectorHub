@@ -42,6 +42,7 @@ async def client(
     chroma_backend: None,
     qdrant_backend: None,
     weaviate_backend: None,
+    milvus_backend: None,
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
@@ -113,6 +114,40 @@ async def test_hybrid_qdrant_sparse_required_and_scoped(client: AsyncClient) -> 
     reg = await _register(client, "hyb-q")
     headers = _auth_headers(reg["access_token"])
     name = await _create_collection(client, headers, "qdrant")
+    await _upsert(client, headers, name, sparse=True)
+
+    missing = await _hybrid(
+        client,
+        headers,
+        name,
+        {"vector": _vector(1), "alpha": 0.75, "top_k": 10},
+    )
+    assert missing.status_code == 422, missing.text
+    assert missing.json()["error_code"] == "VECTOR_SPARSE_REQUIRED"
+
+    ok = await _hybrid(
+        client,
+        headers,
+        name,
+        {
+            "vector": _vector(1),
+            "sparse_vector": {"indices": [0, 2], "values": [1.0, 2.0]},
+            "alpha": 0.75,
+            "top_k": 10,
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    results = ok.json()["results"]
+    assert len(results) == 3
+    assert all(r["metadata"]["_tenant_probe"] == "me" for r in results)
+
+
+async def test_hybrid_milvus_sparse_required_and_scoped(client: AsyncClient) -> None:
+    """Milvus hybrid: sparse input is required (422 VECTOR_SPARSE_REQUIRED)
+    and, with it, returns only the caller's rows."""
+    reg = await _register(client, "hyb-m")
+    headers = _auth_headers(reg["access_token"])
+    name = await _create_collection(client, headers, "milvus")
     await _upsert(client, headers, name, sparse=True)
 
     missing = await _hybrid(
@@ -241,6 +276,31 @@ async def test_qdrant_payload_filtering_via_query(client: AsyncClient) -> None:
     reg = await _register(client, "hyb-f")
     headers = _auth_headers(reg["access_token"])
     name = await _create_collection(client, headers, "qdrant")
+    await _upsert(client, headers, name, sparse=False)
+
+    filtered = await client.post(
+        f"{API}/collections/{name}/query",
+        json={"vector": _vector(1), "top_k": 10, "filters": {"tag": "tag-1"}},
+        headers=headers,
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [r["id"] for r in filtered.json()["results"]] == ["doc-1"]
+
+    ranged = await client.post(
+        f"{API}/collections/{name}/query",
+        json={"vector": _vector(1), "top_k": 10, "filters": {"seed": {"$gte": 1}}},
+        headers=headers,
+    )
+    assert ranged.status_code == 200, ranged.text
+    assert {r["id"] for r in ranged.json()["results"]} == {"doc-1", "doc-2"}
+
+
+async def test_milvus_payload_filtering_via_query(client: AsyncClient) -> None:
+    """Milvus JSON-field filters work through the platform DSL: equality and
+    range narrow the result set (metadata["key"] exprs)."""
+    reg = await _register(client, "hyb-mf")
+    headers = _auth_headers(reg["access_token"])
+    name = await _create_collection(client, headers, "milvus")
     await _upsert(client, headers, name, sparse=False)
 
     filtered = await client.post(

@@ -2,15 +2,15 @@
 
 From the isolation design doc (§5): the full HTTP surface with two real
 principals per backend (JWT + API key, per the two-principal-types
-requirement) and, as of Phase 4, **parametrized per backend** (chroma,
-qdrant, weaviate). Every case seeds **indistinguishable data** (same ids,
-identical vectors, ``_tenant_probe`` payload markers) so a leak cannot hide
-behind coincidentally-different data, and asserts behaviorally (error or
-empty, never cross-tenant rows). Cross-tenant 404 probes flow through the
+requirement) and, as of Phase 5, **parametrized per backend** (chroma,
+qdrant, weaviate, milvus). Every case seeds **indistinguishable data** (same
+ids, identical vectors, ``_tenant_probe`` payload markers) so a leak cannot
+hide behind coincidentally-different data, and asserts behaviorally (error
+or empty, never cross-tenant rows). Cross-tenant 404 probes flow through the
 shared no-oracle helpers so the byte-identical contract is enforced by
 construction.
 
-E6 (hybrid) activates per backend: qdrant (sparse+vector), weaviate
+E6 (hybrid) activates per backend: qdrant + milvus (sparse+vector), weaviate
 (text+vector), chroma (unsupported -> 400 VALIDATION_UNSUPPORTED_OPERATION).
 E5 (async batch) lands with Phase 6.
 """
@@ -30,7 +30,7 @@ from tests.e2e.helpers import (
     _unique,
 )
 
-BACKENDS = ("chroma", "qdrant", "weaviate")
+BACKENDS = ("chroma", "qdrant", "weaviate", "milvus")
 DIM = 8
 
 
@@ -246,15 +246,15 @@ async def test_e6_hybrid_scoping_via_api(
     auth: str,
 ) -> None:
     """Hybrid path scoping (E6). Identical dense vectors + identical sparse
-    vectors (qdrant) or keyword text (weaviate) under both tenants; B's
-    hybrid query returns only B's rows. Chroma has no hybrid: the request is
-    rejected with 400 VALIDATION_UNSUPPORTED_OPERATION (capability
+    vectors (qdrant/milvus) or keyword text (weaviate) under both tenants;
+    B's hybrid query returns only B's rows. Chroma has no hybrid: the request
+    is rejected with 400 VALIDATION_UNSUPPORTED_OPERATION (capability
     hybrid_search) — the fail-closed unsupported arm of the contract."""
     headers_a = await _principal_headers(client, principals["a"]["reg"], auth)
     headers_b = await _principal_headers(client, principals["b"]["reg"], auth)
     await _create_collection(client, headers_a, "hybrid", backend)
     await _create_collection(client, headers_b, "hybrid", backend)
-    sparse = backend == "qdrant"
+    sparse = backend in ("qdrant", "milvus")
     await _upsert(
         client,
         headers_a,
@@ -269,7 +269,7 @@ async def test_e6_hybrid_scoping_via_api(
     )
 
     body: dict[str, Any] = {"vector": _vector(3), "alpha": 0.75, "top_k": 10}
-    if backend == "qdrant":
+    if backend in ("qdrant", "milvus"):
         body["sparse_vector"] = _sparse(3)
     elif backend == "weaviate":
         body["query_text"] = "only-B-docs"

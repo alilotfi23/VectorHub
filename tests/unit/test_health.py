@@ -36,6 +36,7 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
     # registered (the integration layer's session-scoped containers can still
     # be running here, which would otherwise report "ok").
     from app.adapters.chroma_adapter import ChromaAdapter
+    from app.adapters.milvus_adapter import MilvusAdapter
     from app.adapters.qdrant_adapter import QdrantAdapter
     from app.adapters.registry import registry
     from app.adapters.weaviate_adapter import WeaviateAdapter
@@ -44,6 +45,7 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
         ("chroma", ChromaAdapter),
         ("qdrant", QdrantAdapter),
         ("weaviate", WeaviateAdapter),
+        ("milvus", MilvusAdapter),
     ):
         registry.register(name, cls, url="http://127.0.0.1:1")
     monkeypatch.setattr(health_service, "get_redis", lambda: None)
@@ -55,16 +57,22 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
         registry.register("chroma", ChromaAdapter)
         registry.register("qdrant", QdrantAdapter)
         registry.register("weaviate", WeaviateAdapter)
+        registry.register("milvus", MilvusAdapter)
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "down"
     assert body["checks"]["postgres"] == "down"
     assert body["checks"]["redis"] == "down"
     assert body["checks"]["workers"] == "down"
-    # All three built-ins register at import (settings default URL, no server
+    # All four built-ins register at import (settings default URL, no server
     # reachable here) — each probe reports down, exactly as a deployment
     # without the backends would.
-    assert body["checks"]["adapters"] == {"chroma": "down", "qdrant": "down", "weaviate": "down"}
+    assert body["checks"]["adapters"] == {
+        "chroma": "down",
+        "milvus": "down",
+        "qdrant": "down",
+        "weaviate": "down",
+    }
 
 
 async def test_health_probe_emits_structured_log(monkeypatch: pytest.MonkeyPatch) -> None:

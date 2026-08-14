@@ -20,6 +20,12 @@ from app.core.config import get_settings
 CHROMA_IMAGE = "chromadb/chroma:1.5.9"  # pinned to the installed client version
 QDRANT_IMAGE = "qdrant/qdrant:v1.19.0"  # matches qdrant-client 1.19.0
 WEAVIATE_IMAGE = "semitechnologies/weaviate:1.28.4"  # matches weaviate-client 4.23.0
+# Milvus standalone needs etcd + MinIO sidecars (the CLAUDE.md policy: its
+# suite is heavier/slower — separate CI job). Images mirror the official
+# milvus standalone compose; milvus 3.0.0 matches pymilvus 3.0.1.
+MILVUS_ETCD_IMAGE = "quay.io/coreos/etcd:v3.5.25"
+MILVUS_MINIO_IMAGE = "minio/minio:RELEASE.2024-05-28T17-19-04Z"
+MILVUS_IMAGE = "milvusdb/milvus:v3.0.0"
 
 MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
 APP_ROLE_PASSWORD = "app_test_password"
@@ -213,6 +219,84 @@ async def weaviate_backend(weaviate_url: tuple[str, int]) -> AsyncGenerator[None
     registry.register("weaviate", WeaviateAdapter, url=url, grpc_port=grpc_port)
     yield
     registry.register("weaviate", WeaviateAdapter)
+
+
+@pytest.fixture(scope="session")
+async def milvus_url() -> AsyncGenerator[str, None]:
+    """Milvus standalone testcontainer trio (etcd + MinIO sidecars on a shared
+    network with aliases, per the official standalone compose). Yields the
+    gRPC URL; readiness is probed with the AsyncMilvusClient itself (Milvus
+    takes 1-2 min to come up). Only tests that request it pay the Docker cost.
+    """
+    from testcontainers.core.network import Network
+
+    net = Network()
+    net.create()
+    etcd = (
+        DockerContainer(MILVUS_ETCD_IMAGE)
+        .with_network(net)
+        .with_network_aliases("etcd")
+        .with_command(
+            "etcd -advertise-client-urls=http://etcd:2379 "
+            "-listen-client-urls http://0.0.0.0:2379 --data-dir /etcd"
+        )
+    )
+    minio = (
+        DockerContainer(MILVUS_MINIO_IMAGE)
+        .with_network(net)
+        .with_network_aliases("minio")
+        .with_env("MINIO_ACCESS_KEY", "minioadmin")
+        .with_env("MINIO_SECRET_KEY", "minioadmin")
+        .with_command("minio server /minio_data --console-address :9001")
+    )
+    milvus = (
+        DockerContainer(MILVUS_IMAGE)
+        .with_network(net)
+        .with_network_aliases("milvus")
+        .with_env("ETCD_ENDPOINTS", "etcd:2379")
+        .with_env("MINIO_ADDRESS", "minio:9000")
+        .with_exposed_ports(19530)
+        .with_command(["milvus", "run", "standalone"])
+    )
+    try:
+        etcd.start()
+        minio.start()
+        milvus.start()
+        url = f"http://{milvus.get_container_host_ip()}:{milvus.get_exposed_port(19530)}"
+
+        from pymilvus import AsyncMilvusClient
+
+        probe = AsyncMilvusClient(uri=url, timeout=3)
+        try:
+            for _ in range(150):  # up to ~5 min; Milvus standalone is slow to start
+                try:
+                    await probe.list_collections()
+                    break
+                except Exception:
+                    await asyncio.sleep(2)
+            else:
+                raise RuntimeError("Milvus testcontainer trio did not become ready in time")
+        finally:
+            await probe.close()
+        yield url
+    finally:
+        # Stop the containers BEFORE removing the network: the Docker daemon
+        # refuses to remove a network with active endpoints (verified on this
+        # box: 403 "network has active endpoints"). Reverse order of start.
+        milvus.stop()
+        minio.stop()
+        etcd.stop()
+        net.remove()
+
+
+@pytest.fixture(scope="session")
+async def milvus_backend(milvus_url: str) -> AsyncGenerator[None, None]:
+    from app.adapters.milvus_adapter import MilvusAdapter
+    from app.adapters.registry import registry
+
+    registry.register("milvus", MilvusAdapter, url=milvus_url)
+    yield
+    registry.register("milvus", MilvusAdapter)
 
 
 @pytest.fixture

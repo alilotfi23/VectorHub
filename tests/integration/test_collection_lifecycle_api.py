@@ -110,12 +110,19 @@ async def test_collection_duplicate_name_409(client: AsyncClient) -> None:
 
 
 async def test_collection_unregistered_backend_503(client: AsyncClient) -> None:
-    """A schema-valid backend that isn't registered (Milvus lands in Phase 5;
-    qdrant/weaviate are built-ins as of Phase 4) is 503
-    COLLECTION_BACKEND_UNAVAILABLE, not a silent fallback."""
-    reg = await _register(client)
-    headers = _auth_headers(reg["access_token"])
-    resp = await _create(client, headers, "milvus-coll", backend="milvus")
+    """A schema-valid backend that isn't registered is 503
+    COLLECTION_BACKEND_UNAVAILABLE, not a silent fallback. All four backends
+    are built-ins as of Phase 5, so the test unregisters one deterministically
+    (and restores it) — never depending on what other suites left registered."""
+    from app.adapters.milvus_adapter import MilvusAdapter
+
+    registry.unregister("milvus")
+    try:
+        reg = await _register(client)
+        headers = _auth_headers(reg["access_token"])
+        resp = await _create(client, headers, "milvus-coll", backend="milvus")
+    finally:
+        registry.register("milvus", MilvusAdapter)
     assert resp.status_code == 503
     assert resp.json()["error_code"] == "COLLECTION_BACKEND_UNAVAILABLE"
 

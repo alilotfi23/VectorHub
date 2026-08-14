@@ -19,6 +19,8 @@ from tests.integration.conftest import (  # noqa: F401
     chroma_url,
     db,
     db_url,
+    milvus_backend,
+    milvus_url,
     qdrant_backend,
     qdrant_url,
     redis_url,
@@ -35,6 +37,7 @@ async def client(
     chroma_backend: None,  # noqa: F811 — Layer 3 runs the real platform against real vector backends; the e2e layer must never depend on an earlier integration suite having registered the containers
     qdrant_backend: None,  # noqa: F811
     weaviate_backend: None,  # noqa: F811
+    milvus_backend: None,  # noqa: F811
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
