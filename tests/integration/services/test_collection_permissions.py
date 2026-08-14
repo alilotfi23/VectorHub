@@ -245,3 +245,58 @@ async def test_revoke_permission_requires_manage(db: AsyncSession) -> None:
             editor, name=collection.name, user_id=owner.user_id or ""
         )
     assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+
+
+async def test_list_permissions_returns_grants(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    _, viewer = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    await svc.grant_permission(
+        owner, name=collection.name, user_id=viewer.user_id or "", role="editor"
+    )
+    await svc.grant_permission(
+        owner, name=collection.name, user_id=owner.user_id or "", role="owner"
+    )
+
+    grants = await svc.list_permissions(owner, name=collection.name)
+    assert len(grants) == 2
+    by_user = {g.user_id: g.permission for g in grants}
+    assert by_user == {viewer.user_id: "editor", owner.user_id: "owner"}
+
+
+async def test_list_permissions_empty(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    assert await CollectionService(db).list_permissions(owner, name=collection.name) == []
+
+
+async def test_list_permissions_foreign_collection(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    _, owner_b = await _register(db, "orgb")
+    await _add_collection(db, owner_b.tenant_id, name="shared")
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).list_permissions(owner_a, name="shared")
+    assert exc.value.code == ErrorCode.COLLECTION_NOT_FOUND
+    # Missing name: identical result — no existence oracle.
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).list_permissions(owner_a, name="nope")
+    assert exc.value.code == ErrorCode.COLLECTION_NOT_FOUND
+
+
+async def test_list_permissions_requires_manage(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).list_permissions(editor, name=collection.name)
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+
+    # A grant elevates: a viewer granted admin ON the collection can now list
+    # its grants (editor grants don't confer TENANT_MANAGE).
+    await CollectionService(db).grant_permission(
+        owner, name=collection.name, user_id=owner.user_id or "", role="admin"
+    )
+    elevated = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="viewer")
+    grants = await CollectionService(db).list_permissions(elevated, name=collection.name)
+    assert len(grants) == 1

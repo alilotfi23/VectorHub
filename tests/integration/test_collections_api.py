@@ -201,3 +201,71 @@ async def test_revoke_collection_permission_route(
     )
     assert foreign.status_code == 404
     assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"
+
+
+async def test_list_collection_permissions_route(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    tenant_id = reg["user"]["tenant_id"]
+
+    member_resp = await client.post(
+        f"{API}/tenants/{tenant_id}/members",
+        json={"email": _unique_email("list-viewer"), "password": "password-123"},
+        headers=headers,
+    )
+    assert member_resp.status_code == 201
+    member = member_resp.json()
+
+    async with session_factory() as session:
+        collection = Collection(
+            tenant_id=tenant_id,
+            name="products",
+            backend="chroma",
+            dimension=8,
+            distance_metric="cosine",
+            physical_name=f"col_{uuid.uuid4().hex[:12]}",
+        )
+        session.add(collection)
+        await session.commit()
+
+    # No grants yet: empty list.
+    empty = await client.get(f"{API}/collections/products/permissions", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json() == []
+
+    # Grant two roles, then list — both grants come back with roles resolved.
+    await client.patch(
+        f"{API}/collections/products/permissions",
+        json={"user_id": member["id"], "role": "editor"},
+        headers=headers,
+    )
+    await client.patch(
+        f"{API}/collections/products/permissions",
+        json={"user_id": reg["user"]["id"], "role": "owner"},
+        headers=headers,
+    )
+    listed = await client.get(f"{API}/collections/products/permissions", headers=headers)
+    assert listed.status_code == 200, listed.text
+    grants = listed.json()
+    assert len(grants) == 2
+    assert all(g["collection_name"] == "products" for g in grants)
+    by_user = {g["user_id"]: g["role"] for g in grants}
+    assert by_user == {member["id"]: "editor", reg["user"]["id"]: "owner"}
+
+    # The member (viewer + editor grant) cannot enumerate grants: 403.
+    member_login = await client.post(
+        f"{API}/auth/login", json={"email": member["email"], "password": "password-123"}
+    )
+    member_headers = _auth_headers(member_login.json()["access_token"])
+    denied = await client.get(f"{API}/collections/products/permissions", headers=member_headers)
+    assert denied.status_code == 403
+    assert denied.json()["error_code"] == "AUTH_INSUFFICIENT_SCOPE"
+
+    # Foreign tenant: no existence oracle.
+    other = await _register(client, "other")
+    foreign_headers = _auth_headers(other["access_token"])
+    foreign = await client.get(f"{API}/collections/products/permissions", headers=foreign_headers)
+    assert foreign.status_code == 404
+    assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"

@@ -13,7 +13,8 @@ from app.schemas.collections import (
 from app.services.collection_service import CollectionService
 
 # Phase 3 adds create/delete/list/get/info on this router; today it carries
-# the resource-level RBAC surface (PATCH /{name}/permissions).
+# the resource-level RBAC surface: GET/PATCH /{name}/permissions,
+# DELETE /{name}/permissions/{user_id}.
 
 router = APIRouter(prefix="/collections", tags=["collections"])
 
@@ -36,6 +37,26 @@ async def update_collection_permissions(
         role=grant.permission,
         created_at=grant.created_at,
     )
+
+
+@router.get("/{name}/permissions", response_model=list[CollectionPermissionResponse])
+async def list_collection_permissions(
+    name: str,
+    collection: Collection = Depends(require_collection_permission(Permission.TENANT_MANAGE)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> list[CollectionPermissionResponse]:
+    grants = await CollectionService(session).list_permissions(principal, name=name)
+    return [
+        CollectionPermissionResponse(
+            collection_id=grant.collection_id,
+            collection_name=collection.name,
+            user_id=grant.user_id,
+            role=grant.permission,
+            created_at=grant.created_at,
+        )
+        for grant in grants
+    ]
 
 
 @router.delete("/{name}/permissions/{user_id}", status_code=204)

@@ -169,3 +169,27 @@ class CollectionService:
             details={"user_id": user_id},
         )
         await self._session.commit()
+
+    async def list_permissions(self, actor: Principal, *, name: str) -> list[CollectionPermission]:
+        """List a collection's resource-level grants for introspection.
+
+        Same manage gate as grant/revoke: grant state is access-control state,
+        and only managers should be able to enumerate who holds elevated roles
+        on a collection. Tenant-scoped resolution (no existence oracle);
+        ordered by grant creation for a stable read.
+        """
+        collection = await self.get_collection(actor, name=name)
+        actor_grant = await self.get_permission_grant(collection.id, actor.user_id or "")
+        grant_role = actor_grant.permission if actor_grant else None
+        if not resolve_permission(actor, Permission.TENANT_MANAGE, collection_grant=grant_role):
+            raise AppError(
+                ErrorCode.AUTH_INSUFFICIENT_SCOPE,
+                "Admin or owner role required to view grants",
+                status_code=403,
+            )
+        rows = await self._session.scalars(
+            select(CollectionPermission)
+            .where(CollectionPermission.collection_id == collection.id)
+            .order_by(CollectionPermission.created_at)
+        )
+        return list(rows)
