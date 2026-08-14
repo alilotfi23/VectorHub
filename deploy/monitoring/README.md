@@ -28,9 +28,13 @@ rule_files:
 
 Rules emit `severity` labels (`critical` | `warning`). A shipped Alertmanager
 config (`alertmanager/alertmanager.yml`) routes them: `critical` → PagerDuty,
-`warning` and anything unlabeled → Slack. Credentials are injected by env vars
-(`SLACK_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY`) — Alertmanager expands `${VAR}`
-at startup, so the config carries no secrets. Mount the config and templates:
+`warning` and anything unlabeled → Slack. The Slack receiver posts structured
+attachment fields (alert, severity, summary, value, check, limit) alongside
+the detail text, so the at-a-glance facts are scannable — optional labels
+render a placeholder rather than `<no value>`. Credentials are injected by env
+vars (`SLACK_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY`) — Alertmanager expands
+`${VAR}` at startup, so the config carries no secrets. Mount the config and
+templates:
 
 ```yaml
 # alertmanager.yml (container mount points)

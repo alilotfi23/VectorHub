@@ -40,6 +40,29 @@ receivers:
         channel: "#platform-alerts"
         title: '{{ template "vhk.title" . }}'
         text: '{{ template "vhk.text" . }}'
+        # Structured fields so the at-a-glance facts are scannable instead of
+        # buried in one text block. Optional labels (check/limit) render a
+        # placeholder rather than Go's <no value>; the value field iterates
+        # alerts because a grouped notification can carry several.
+        fields:
+          - title: Alert
+            value: '{{ .CommonLabels.alertname }}'
+            short: true
+          - title: Severity
+            value: '{{ .CommonLabels.severity }}'
+            short: true
+          - title: Summary
+            value: '{{ .CommonAnnotations.summary }}'
+            short: false
+          - title: Value
+            value: '{{ range .Alerts }}{{ .Value }} {{ end }}'
+            short: true
+          - title: Check
+            value: '{{ with .CommonLabels.check }}{{ . }}{{ else }}—{{ end }}'
+            short: true
+          - title: Limit
+            value: '{{ with .CommonLabels.limit }}{{ . }}{{ else }}—{{ end }}'
+            short: true
 
   - name: pager
     pagerduty_configs:

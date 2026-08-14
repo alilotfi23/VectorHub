@@ -242,6 +242,36 @@ def test_alertmanager_templates_referenced_and_defined() -> None:
     assert 'define "vhk.text"' in tmpl, "template must define vhk.text"
 
 
+def test_alertmanager_slack_posts_rich_fields() -> None:
+    """The Slack receiver posts structured attachment fields (summary, value,
+    check) — not just a text blob — so the at-a-glance facts are scannable.
+    Field values must come from the alert payload and optional labels must
+    render a placeholder instead of Go's <no value>."""
+    am = _load_alertmanager()
+    slack = next(r for r in am["receivers"] if r["name"] == "slack")
+    sc = slack["slack_configs"][0]
+    fields = sc["fields"]
+    assert fields, "slack receiver must define fields"
+    assert sc["title"], "slack receiver must keep a title"
+
+    by_title = {f["title"]: f["value"] for f in fields}
+    required = {"Summary", "Value", "Check"}
+    assert required <= set(by_title), f"missing required fields: {sorted(required - set(by_title))}"
+
+    # facts must be pulled from the alert payload, never hardcoded
+    assert ".CommonAnnotations.summary" in by_title["Summary"]
+    assert "range .Alerts" in by_title["Value"], "value must iterate the group's alerts"
+    assert ".Value" in by_title["Value"]
+    assert "CommonLabels.check" in by_title["Check"]
+    # optional labels (check/limit) need a with/else so absent labels render
+    # a placeholder, not <no value>
+    assert "else" in by_title["Check"], "check field must guard missing labels"
+    assert "with .CommonLabels.limit" in by_title["Limit"]
+    # every field must be a template expression, not literal text
+    for title, value in by_title.items():
+        assert "{{" in value, f"field {title} value is not templated: {value!r}"
+
+
 def test_alertmanager_inhibits_downstream_warnings_during_critical() -> None:
     """While VhkCriticalDependencyDown fires, the symptom warnings (error
     spikes, 429 floods, stale workers, latency) must be inhibited so one
