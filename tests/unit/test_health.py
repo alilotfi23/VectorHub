@@ -4,10 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.services.health_service as health_service
+from app.admin import app as admin_app
 from app.db.session import get_session
-from app.main import app
+from app.main import app as public_app
 
-client = TestClient(app)
+admin_client = TestClient(admin_app)
+public_client = TestClient(public_app)
 
 
 class _BrokenSession:
@@ -30,11 +32,11 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
         yield _BrokenSession()
 
     monkeypatch.setattr(health_service, "get_redis", lambda: None)
-    app.dependency_overrides[get_session] = override_get_session
+    admin_app.dependency_overrides[get_session] = override_get_session
     try:
-        resp = client.get("/health")
+        resp = admin_client.get("/health")
     finally:
-        app.dependency_overrides.clear()
+        admin_app.dependency_overrides.clear()
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "down"
@@ -45,11 +47,12 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_cors_default_permissive() -> None:
-    resp = client.options(
-        "/health",
+    """CORS lives on the public app only (the admin app has no middleware)."""
+    resp = public_client.options(
+        "/api/v1/auth/register",
         headers={
             "Origin": "http://localhost:3000",
-            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Method": "POST",
         },
     )
     assert resp.status_code == 200

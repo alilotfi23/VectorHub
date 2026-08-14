@@ -1,5 +1,7 @@
 """GET /health against real Postgres and Redis: the full ok/degraded/down
-contract, including simulated outages and per-adapter status reporting."""
+contract, including simulated outages and per-adapter status reporting.
+
+The probe lives on the internal admin app (app.admin), never the public app."""
 
 import time
 from collections.abc import AsyncGenerator
@@ -9,10 +11,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.registry import registry
+from app.admin import app as admin_app
 from app.core.cache import get_redis
 from app.core.config import get_settings
 from app.db.session import get_session
-from app.main import app
 from app.services.health_service import WORKER_HEARTBEAT_PREFIX
 
 
@@ -34,11 +36,11 @@ async def client(
         async with session_factory() as session:
             yield session
 
-    app.dependency_overrides[get_session] = override_get_session
-    transport = ASGITransport(app=app)
+    admin_app.dependency_overrides[get_session] = override_get_session
+    transport = ASGITransport(app=admin_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-    app.dependency_overrides.clear()
+    admin_app.dependency_overrides.clear()
 
 
 async def _write_heartbeat(*, ts: float | None = None) -> None:
@@ -129,7 +131,7 @@ async def test_health_down_when_postgres_unreachable(client: AsyncClient) -> Non
         async with bad_factory() as session:
             yield session
 
-    app.dependency_overrides[get_session] = bad_session
+    admin_app.dependency_overrides[get_session] = bad_session
     try:
         resp = await client.get("/health")
     finally:

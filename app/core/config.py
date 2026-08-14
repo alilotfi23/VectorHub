@@ -15,6 +15,18 @@ class Settings(BaseSettings):
     # "json" (one JSON object per line — set LOG_FORMAT=json in staging/prod).
     log_format: str = "console"
 
+    # --- Serving (app.main:run — one process, two apps) ---
+    # Public API: the /api/v1 surface. It exposes NO /health or /metrics.
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    # Internal admin app: /health and /metrics only. The security boundary is
+    # that this port is never exposed publicly (not published in compose, no
+    # k8s Ingress/NodePort/LB); 127.0.0.1 is the safe single-host default —
+    # container orchestrators must set ADMIN_HOST=0.0.0.0 so probes/scrapers
+    # on the pod/container network can reach it.
+    admin_host: str = "127.0.0.1"
+    admin_port: int = 9091
+
     # --- Auth / JWT (Phase 2) ---
     # HS256 with a strong secret. The dev default is a trap: prod refuses to
     # boot with it (see validator below). Generate with `openssl rand -hex 32`.

@@ -1,23 +1,24 @@
-from collections.abc import AsyncIterator
+import asyncio
+import contextlib
+import signal
+from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
+from types import FrameType
 
-from fastapi import Depends, FastAPI, Response
+import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_fastapi_instrumentator import metrics as instrumentator_metrics
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin import app as admin_app
 from app.api.v1 import api_keys, auth, collections, tenants
 from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
 from app.core.logging import setup_logging
-from app.core.metrics import metrics_response
-from app.db.session import get_session
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.schemas.health import HealthReport
-from app.services.health_service import check_health
 
 settings = get_settings()
 
@@ -40,7 +41,7 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(MetricsMiddleware)
 
 # Request-duration histograms and request/response size metrics (Phase 7
-# pull-forward). Registers on the shared default registry, so the existing
+# pull-forward). Registers on the shared default registry, so the admin app's
 # /metrics route renders these series alongside the platform counters.
 _instrumentator = Instrumentator(should_group_status_codes=True)
 _instrumentator.add(instrumentator_metrics.default())
@@ -66,23 +67,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# The public app deliberately exposes NO /health or /metrics route — those
+# live on app.admin (the internal admin app), so public traffic can't reach
+# the probe/scrape endpoints. See app/admin.py for the boundary rationale.
 
-@app.get("/health", response_model=HealthReport, tags=["infra"])
-async def health(response: Response, session: AsyncSession = Depends(get_session)) -> HealthReport:
-    """Per-dependency health probe (see the /health note in CLAUDE.md).
 
-    Returns 200 while Postgres and Redis are up — ``"degraded"`` when a
-    non-critical dependency (worker, vector backend) is down — and 503 with
-    overall ``"down"`` when a critical dependency is unreachable.
+class _SignalNeutralServer(uvicorn.Server):
+    """uvicorn.Server without its own signal capture.
+
+    Two servers in one process can't both install signal handlers — the
+    second ``capture_signals()`` would override the first's, so SIGINT/SIGTERM
+    would stop only one server and shutdown would hang. ``run()`` owns the
+    process's signals and stops both servers via ``should_exit``.
     """
-    report = await check_health(session)
-    response.status_code = 503 if report.status == "down" else 200
-    return report
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Generator[None, None, None]:
+        yield
 
 
-@app.get("/metrics", tags=["infra"])
-async def metrics() -> Response:
-    """Prometheus text-format exposition of the platform's counters
-    (request counts, health-check outcomes). Scraped by infra probes.
+def run() -> None:
+    """Serve the public API and the internal admin app in one process.
+
+    - Public app (``app.main:app``): the /api/v1 surface on API_HOST:API_PORT.
+      No /health, no /metrics.
+    - Admin app (``app.admin:app``): /health and /metrics on
+      ADMIN_HOST:ADMIN_PORT (default 127.0.0.1 — internal only).
+
+    The admin app must share this process with the public app: the Prometheus
+    registry is process-local, so the scrape endpoint only sees real counters
+    here. Run via ``python -m app.main``.
     """
-    return metrics_response()
+    cfg = get_settings()
+    servers = [
+        _SignalNeutralServer(
+            uvicorn.Config(app, host=cfg.api_host, port=cfg.api_port, log_level="info")
+        ),
+        _SignalNeutralServer(
+            uvicorn.Config(admin_app, host=cfg.admin_host, port=cfg.admin_port, log_level="info")
+        ),
+    ]
+
+    def _stop_all(_signum: int, _frame: FrameType | None) -> None:
+        for server in servers:
+            server.should_exit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _stop_all)
+
+    async def _serve() -> None:
+        await asyncio.gather(*(server.serve() for server in servers))
+
+    asyncio.run(_serve())
+
+
+if __name__ == "__main__":
+    run()
