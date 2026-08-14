@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -300,3 +301,46 @@ async def test_list_permissions_requires_manage(db: AsyncSession) -> None:
     elevated = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="viewer")
     grants = await CollectionService(db).list_permissions(elevated, name=collection.name)
     assert len(grants) == 1
+
+
+async def test_list_permissions_ordered_by_role_then_user_id(db: AsyncSession) -> None:
+    """Deterministic ordering regardless of created_at ties: role rank desc
+    (owners first), then user_id."""
+    _, owner = await _register(db, "org")
+    _, viewer_a = await _add_viewer_member(db, owner)
+    _, viewer_b = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+
+    # Insert directly with created_at values whose *time* order contradicts
+    # the rank order (viewers created after the owner): only a rank-first
+    # sort key produces the expected result.
+    db.add_all(
+        [
+            CollectionPermission(
+                collection_id=collection.id,
+                user_id=owner.user_id or "",
+                permission="owner",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            CollectionPermission(
+                collection_id=collection.id,
+                user_id=viewer_a.user_id or "",
+                permission="viewer",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+            ),
+            CollectionPermission(
+                collection_id=collection.id,
+                user_id=viewer_b.user_id or "",
+                permission="viewer",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+            ),
+        ]
+    )
+    await db.commit()
+
+    grants = await CollectionService(db).list_permissions(owner, name=collection.name)
+    assert [(g.permission, g.user_id) for g in grants] == [
+        ("owner", owner.user_id or ""),
+        ("viewer", min(viewer_a.user_id or "", viewer_b.user_id or "")),
+        ("viewer", max(viewer_a.user_id or "", viewer_b.user_id or "")),
+    ]

@@ -175,8 +175,11 @@ class CollectionService:
 
         Same manage gate as grant/revoke: grant state is access-control state,
         and only managers should be able to enumerate who holds elevated roles
-        on a collection. Tenant-scoped resolution (no existence oracle);
-        ordered by grant creation for a stable read.
+        on a collection. Tenant-scoped resolution (no existence oracle).
+
+        Ordering is deterministic: role rank descending (owners first), then
+        user_id. created_at is a Python-side default that can tie within a
+        batch, so it must not be the sort key.
         """
         collection = await self.get_collection(actor, name=name)
         actor_grant = await self.get_permission_grant(collection.id, actor.user_id or "")
@@ -188,8 +191,8 @@ class CollectionService:
                 status_code=403,
             )
         rows = await self._session.scalars(
-            select(CollectionPermission)
-            .where(CollectionPermission.collection_id == collection.id)
-            .order_by(CollectionPermission.created_at)
+            select(CollectionPermission).where(CollectionPermission.collection_id == collection.id)
         )
-        return list(rows)
+        # Sort in Python: role_rank stays the single source of truth for role
+        # ordering, and the list is bounded (one grant per tenant member).
+        return sorted(rows, key=lambda g: (-role_rank(g.permission), g.user_id))

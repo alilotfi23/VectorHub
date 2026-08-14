@@ -251,6 +251,9 @@ async def test_list_collection_permissions_route(
     grants = listed.json()
     assert len(grants) == 2
     assert all(g["collection_name"] == "products" for g in grants)
+    # Rank-ordered (owner first), not creation-ordered (the member's editor
+    # grant was created before the owner's).
+    assert [g["role"] for g in grants] == ["owner", "editor"]
     by_user = {g["user_id"]: g["role"] for g in grants}
     assert by_user == {member["id"]: "editor", reg["user"]["id"]: "owner"}
 
