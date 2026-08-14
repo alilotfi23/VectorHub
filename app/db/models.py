@@ -77,6 +77,24 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class RevokedToken(Base):
+    """jti deny-list for stateless access tokens.
+
+    Entries are only meaningful while the token could still be presented
+    (within jwt_access_ttl_minutes of issuance), so stale rows are purged
+    opportunistically on each logout; a stale row is harmless anyway — an
+    expired token is already rejected at decode. Postgres is the source of
+    truth; Phase 6's Redis cache fronts this table.
+    """
+
+    __tablename__ = "revoked_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Collection(Base):
     __tablename__ = "collections"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_collections_tenant_name"),)

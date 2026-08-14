@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_principal
@@ -62,8 +62,21 @@ async def refresh(
 
 
 @router.post("/logout", status_code=204)
-async def logout(body: LogoutRequest, session: AsyncSession = Depends(get_session)) -> Response:
-    await AuthService(session).logout(body.refresh_token)
+async def logout(
+    body: LogoutRequest,
+    request: Request,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Revoke both credentials: the refresh token in the body and the
+    presented access token's jti (deny-listed, so it dies immediately).
+    Requires a valid bearer access token — a client with an expired one
+    refreshes first, then logs out (the expired token is already dead)."""
+    await AuthService(session).logout(
+        body.refresh_token,
+        access_jti=request.state.token_jti,
+        actor=principal,
+    )
     return Response(status_code=204)
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.security import Principal, decode_access_token, hash_refresh_token
-from app.db.models import AuditLog, RefreshToken, Tenant, User
+from app.db.models import AuditLog, RefreshToken, RevokedToken, Tenant, User
 from app.services.api_key_service import ApiKeyService
 from app.services.auth_service import AuthService
 
@@ -27,7 +27,7 @@ async def test_register_creates_tenant_owner_and_tokens(db: AsyncSession) -> Non
     assert pair.token_type == "bearer"
     assert pair.expires_in == 15 * 60
 
-    principal = decode_access_token(pair.access_token)
+    principal = decode_access_token(pair.access_token).principal
     assert principal.user_id == user.id
     assert principal.tenant_id == user.tenant_id
     assert principal.role == "owner"
@@ -154,12 +154,67 @@ async def test_logout_revokes_refresh(db: AsyncSession) -> None:
     await AuthService(db).logout(pair.refresh_token)
 
 
+async def test_logout_deny_lists_access_token_jti(db: AsyncSession) -> None:
+    """Logout with a bearer access token records its jti on the deny-list
+    (with actor attribution) so the auth boundary can reject it immediately.
+    """
+    email = _unique("logout@example.com")
+    user, pair = await AuthService(db).register(
+        email=email, password="password-123", tenant_name=_unique("acme")
+    )
+    decoded = decode_access_token(pair.access_token)
+    await AuthService(db).logout(
+        pair.refresh_token,
+        access_jti=decoded.jti,
+        actor=decoded.principal,
+    )
+
+    row = await db.scalar(select(RevokedToken).where(RevokedToken.jti == decoded.jti))
+    assert row is not None
+    assert row.user_id == user.id
+    assert row.revoked_at is not None
+    # The refresh side is revoked too (existing contract).
+    with pytest.raises(AppError) as exc:
+        await AuthService(db).refresh(pair.refresh_token)
+    assert exc.value.code == ErrorCode.AUTH_TOKEN_REVOKED
+
+
+async def test_logout_purges_stale_deny_list_rows(db: AsyncSession) -> None:
+    """Stale deny-list rows (older than the access-token TTL) are purged
+    opportunistically on logout, so the table stays bounded."""
+    email = _unique("purge@example.com")
+    user, pair = await AuthService(db).register(
+        email=email, password="password-123", tenant_name=_unique("acme")
+    )
+    stale_jti = "stale-jti"
+    db.add(
+        RevokedToken(
+            jti=stale_jti,
+            user_id=user.id,
+            revoked_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    await db.commit()
+
+    decoded = decode_access_token(pair.access_token)
+    await AuthService(db).logout(
+        pair.refresh_token,
+        access_jti=decoded.jti,
+        actor=decoded.principal,
+    )
+
+    # The stale row is gone; the fresh one remains.
+    assert await db.scalar(select(RevokedToken).where(RevokedToken.jti == stale_jti)) is None
+    row = await db.scalar(select(RevokedToken).where(RevokedToken.jti == decoded.jti))
+    assert row is not None
+
+
 async def test_me_returns_user(db: AsyncSession) -> None:
     email = _unique("me@example.com")
     user, pair = await AuthService(db).register(
         email=email, password="password-123", tenant_name=_unique("acme")
     )
-    principal = decode_access_token(pair.access_token)
+    principal = decode_access_token(pair.access_token).principal
     me = await AuthService(db).me(principal)
     assert me.id == user.id
     assert me.email == email

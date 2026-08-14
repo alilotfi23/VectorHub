@@ -32,7 +32,7 @@ def test_password_hashes_are_salted() -> None:
 
 def test_access_token_roundtrip_claims() -> None:
     token = create_access_token("user-1", "tenant-1", "admin", is_platform_admin=False)
-    principal = decode_access_token(token)
+    principal = decode_access_token(token).principal
     assert principal.user_id == "user-1"
     assert principal.tenant_id == "tenant-1"
     assert principal.role == "admin"
@@ -42,7 +42,20 @@ def test_access_token_roundtrip_claims() -> None:
 
 def test_access_token_carries_platform_admin() -> None:
     token = create_access_token("user-1", "tenant-1", "owner", is_platform_admin=True)
-    assert decode_access_token(token).is_platform_admin is True
+    assert decode_access_token(token).principal.is_platform_admin is True
+
+
+def test_access_token_jti_is_exposed_and_distinct() -> None:
+    """Every issued token carries its own jti (needed at the auth boundary
+    for the revocation deny-list), and a fresh token gets a fresh one — so
+    revoking one session never touches another."""
+    token_a = create_access_token("user-1", "tenant-1", "admin", is_platform_admin=False)
+    token_b = create_access_token("user-1", "tenant-1", "admin", is_platform_admin=False)
+    decoded_a = decode_access_token(token_a)
+    decoded_b = decode_access_token(token_b)
+    assert decoded_a.jti
+    assert decoded_a.jti != decoded_b.jti
+    assert decoded_a.principal.user_id == "user-1"
 
 
 def test_expired_token_rejected() -> None:

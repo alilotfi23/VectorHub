@@ -2,14 +2,15 @@
 
 Refresh tokens are opaque and stored hashed; rotation is atomic (a
 conditional UPDATE claims the row, so a replayed token is rejected as
-revoked). Access tokens are short-lived stateless JWTs — their jti-based
-revocation/caching lands in Phase 6 with Redis.
+revoked). Access tokens are short-lived stateless JWTs whose jti is
+revocable via the Postgres-backed deny-list (revoked_tokens): logout
+kills both the refresh token and the presented access token immediately.
 """
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +24,7 @@ from app.core.security import (
     hash_refresh_token,
     verify_password,
 )
-from app.db.models import RefreshToken, Tenant, User
+from app.db.models import RefreshToken, RevokedToken, Tenant, User
 from app.services.audit_service import AuditService
 
 
@@ -130,7 +131,37 @@ class AuthService:
         await self._session.commit()
         return pair
 
-    async def logout(self, refresh_token: str) -> None:
+    async def logout(
+        self,
+        refresh_token: str,
+        *,
+        access_jti: str | None = None,
+        actor: Principal | None = None,
+    ) -> None:
+        """Revoke a refresh token (idempotent) and, when the caller presented
+        a bearer access token, deny-list its jti so it dies immediately.
+
+        The deny-list row matters only while the token could still be
+        presented (within jwt_access_ttl_minutes of issuance), so stale rows
+        are purged opportunistically on every logout to keep the table
+        bounded; a stale row is harmless anyway — an expired token is already
+        rejected at decode.
+        """
+        now = datetime.now(UTC)
+        settings = get_settings()
+        await self._session.execute(
+            delete(RevokedToken).where(
+                RevokedToken.revoked_at < now - timedelta(minutes=settings.jwt_access_ttl_minutes)
+            )
+        )
+        if access_jti is not None:
+            self._session.add(
+                RevokedToken(
+                    jti=access_jti,
+                    user_id=actor.user_id if actor else None,
+                    revoked_at=now,
+                )
+            )
         # Idempotent: revoking an already-revoked or unknown token is a no-op.
         await self._session.execute(
             update(RefreshToken)

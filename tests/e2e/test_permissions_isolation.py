@@ -9,7 +9,10 @@ schema-level rejection of forged `tenant_id`, and a byte-identical negative
 control proving responses can't act as an existence oracle. Plus key-death
 cases: a revoked or expired API key is rejected at authentication (401) on
 every path — own tenant, foreign tenant, and nonexistent names — with
-byte-identical bodies, so a dead key carries no tenant identity at all. See
+byte-identical bodies, so a dead key carries no tenant identity at all. Plus
+access-token death: logout deny-lists the presented JWT's jti, so the token
+dies immediately — byte-identical 401 AUTH_TOKEN_REVOKED on own, foreign,
+and nonexistent targets — while a fresh login (new jti) works. See
 docs/superpowers/specs/2026-08-14-tenant-isolation-tests-design.md.
 """
 
@@ -491,3 +494,63 @@ async def test_revoked_key_loses_tenant_role_immediately(
     assert read_after.json()["error_code"] == "AUTH_INVALID_CREDENTIALS"
     grants_after = await client.get(f"{API}/collections/own/permissions", headers=key_headers)
     assert grants_after.status_code == 401
+
+
+async def test_logged_out_access_token_dies_immediately(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Logout deny-lists the presented access token's jti: the request
+    immediately after the 204 — on any target, own tenant or foreign — is a
+    401 AUTH_TOKEN_REVOKED, byte-identical everywhere (a dead credential
+    can't act as an existence oracle). Revocation is per-jti, not per-user:
+    a fresh login works, and other tenants' tokens are untouched."""
+    reg_a = await _register(client, "orga")
+    reg_b = await _register(client, "orgb")
+    headers_a = _auth_headers(reg_a["access_token"])
+    headers_b = _auth_headers(reg_b["access_token"])
+    tenant_a = reg_a["user"]["tenant_id"]
+    tenant_b = reg_b["user"]["tenant_id"]
+
+    await _seed_collection(session_factory, tenant_a, "a-only")
+    await _seed_collection(session_factory, tenant_b, "b-only")
+
+    # Live right now: A's token passes on A's own resource.
+    before = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
+    assert before.status_code == 200
+
+    # Logout revokes both the refresh token and the presented access token.
+    out = await client.post(
+        f"{API}/auth/logout",
+        json={"refresh_token": reg_a["refresh_token"]},
+        headers=headers_a,
+    )
+    assert out.status_code == 204, out.text
+
+    # Dead immediately on every path — own tenant, foreign tenant, nowhere —
+    # with byte-identical 401 AUTH_TOKEN_REVOKED bodies: rejected at the auth
+    # boundary before any resolve-once gate can consult it.
+    own = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
+    other = await client.get(f"{API}/collections/b-only/permissions", headers=headers_a)
+    nowhere = await client.get(
+        f"{API}/collections/{uuid.uuid4().hex}/permissions", headers=headers_a
+    )
+    for resp in (own, other, nowhere):
+        assert resp.status_code == 401, resp.text
+        assert resp.json()["error_code"] == "AUTH_TOKEN_REVOKED"
+    assert own.json() == other.json() == nowhere.json()
+
+    # Revocation is per-jti: a fresh login issues a new jti that works...
+    relogin = await client.post(
+        f"{API}/auth/login",
+        json={"email": reg_a["user"]["email"], "password": "password-123"},
+    )
+    assert relogin.status_code == 200
+    fresh = await client.get(
+        f"{API}/collections/a-only/permissions",
+        headers=_auth_headers(relogin.json()["access_token"]),
+    )
+    assert fresh.status_code == 200
+
+    # ...and B's session is untouched.
+    b_ok = await client.get(f"{API}/collections/b-only/permissions", headers=headers_b)
+    assert b_ok.status_code == 200

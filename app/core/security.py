@@ -6,8 +6,9 @@ means a future swap (e.g. argon2) is a one-file change.
 
 Access tokens are stateless JWTs (HS256) carrying user/tenant/role claims;
 short TTL (~15 min). Refresh tokens are opaque, stored hashed (sha256) in
-Postgres with rotation — never sent to the client twice. Redis-backed
-principal caching and access-token jti revocation land in Phase 6 with the
+Postgres with rotation — never sent to the client twice. Access-token
+revocation is a Postgres-backed jti deny-list (revoked_tokens) checked at
+the auth boundary; Redis caching of that list lands in Phase 6 with the
 rest of the Redis infrastructure.
 """
 
@@ -40,6 +41,18 @@ class Principal:
     api_key_id: str | None = None
 
 
+@dataclass(frozen=True)
+class DecodedAccessToken:
+    """A verified access token: the Principal it carries plus its jti.
+
+    jti is credential-specific (not identity), so it stays off Principal —
+    the auth boundary needs it to check the revocation deny-list.
+    """
+
+    principal: Principal
+    jti: str
+
+
 # --- Passwords ---
 
 
@@ -69,7 +82,7 @@ def create_access_token(user_id: str, tenant_id: str, role: str, is_platform_adm
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def decode_access_token(token: str) -> Principal:
+def decode_access_token(token: str) -> DecodedAccessToken:
     settings = get_settings()
     try:
         claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
@@ -81,11 +94,14 @@ def decode_access_token(token: str) -> Principal:
         raise AppError(
             ErrorCode.AUTH_INVALID_CREDENTIALS, "Invalid access token", status_code=401
         ) from exc
-    return Principal(
-        user_id=str(claims["sub"]),
-        tenant_id=str(claims["tid"]),
-        role=str(claims["role"]),
-        is_platform_admin=bool(claims.get("adm", False)),
+    return DecodedAccessToken(
+        principal=Principal(
+            user_id=str(claims["sub"]),
+            tenant_id=str(claims["tid"]),
+            role=str(claims["role"]),
+            is_platform_admin=bool(claims.get("adm", False)),
+        ),
+        jti=str(claims["jti"]),
     )
 
 

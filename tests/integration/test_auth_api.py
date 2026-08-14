@@ -109,10 +109,22 @@ async def test_refresh_rotation_and_replay(client: AsyncClient) -> None:
     assert again.status_code == 200
 
 
-async def test_logout_revokes_refresh(client: AsyncClient) -> None:
+async def test_logout_revokes_both_tokens(client: AsyncClient) -> None:
     reg = await _register(client)
-    out = await client.post(f"{API}/auth/logout", json={"refresh_token": reg["refresh_token"]})
+    headers = _auth_headers(reg["access_token"])
+
+    # Logout requires the bearer access token and kills both credentials:
+    # the refresh token in the body and the presented access token's jti.
+    out = await client.post(
+        f"{API}/auth/logout", json={"refresh_token": reg["refresh_token"]}, headers=headers
+    )
     assert out.status_code == 204
+
+    # The access token dies immediately at the auth boundary.
+    me = await client.get(f"{API}/auth/me", headers=headers)
+    assert me.status_code == 401
+    assert me.json()["error_code"] == "AUTH_TOKEN_REVOKED"
+
     after = await client.post(f"{API}/auth/refresh", json={"refresh_token": reg["refresh_token"]})
     assert after.status_code == 401
     assert after.json()["error_code"] == "AUTH_TOKEN_REVOKED"

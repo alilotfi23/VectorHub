@@ -10,12 +10,13 @@ in at exactly one place.
 from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, has_permission
 from app.core.security import Principal, decode_access_token
-from app.db.models import Tenant
+from app.db.models import RevokedToken, Tenant
 from app.db.session import get_session
 from app.services.api_key_service import ApiKeyService
 from app.services.collection_service import CollectionAccess, CollectionService
@@ -30,7 +31,14 @@ async def get_current_principal(
     auth_header = request.headers.get("Authorization", "")
     principal: Principal
     if auth_header.lower().startswith("bearer "):
-        principal = decode_access_token(auth_header[7:].strip())
+        decoded = decode_access_token(auth_header[7:].strip())
+        # Jti deny-list: logout revokes the access token immediately. The
+        # check is one indexed lookup; Phase 6's Redis cache fronts this
+        # table (Postgres remains the source of truth).
+        if await session.scalar(select(RevokedToken.id).where(RevokedToken.jti == decoded.jti)):
+            raise AppError(ErrorCode.AUTH_TOKEN_REVOKED, "Access token revoked", status_code=401)
+        principal = decoded.principal
+        request.state.token_jti = decoded.jti
     else:
         api_key = request.headers.get(API_KEY_HEADER)
         if not api_key:
@@ -39,6 +47,7 @@ async def get_current_principal(
         if resolved is None:
             raise AppError(ErrorCode.AUTH_INVALID_CREDENTIALS, "Invalid API key", status_code=401)
         principal = resolved
+        request.state.token_jti = None
     request.state.principal = principal  # for middleware (Phase 6 audit, etc.)
     return principal
 
