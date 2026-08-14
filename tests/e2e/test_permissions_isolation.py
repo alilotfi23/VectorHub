@@ -32,6 +32,7 @@ from tests.e2e.helpers import (
     _assert_no_existence_oracle,
     _auth_headers,
     _dead_credential_401,
+    _get_page,
     _no_oracle_404,
     _principal_headers,
     _provision_member,
@@ -83,12 +84,8 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
     assert granted.status_code == 200, granted.text
 
     # B, with the identical name, sees nothing.
-    b_list = await client.get(f"{API}/collections/products/permissions", headers=headers_b)
-    assert b_list.status_code == 200
-    body = b_list.json()
-    assert body["items"] == []
-    assert body["total"] == 0
-    assert body["next_cursor"] is None
+    b_items = await _get_page(client, f"{API}/collections/products/permissions", headers_b, total=0)
+    assert b_items == []
 
     # B tries to revoke A's grantee by user_id on the same name: resolves to
     # B's own collection row, no-op 204, A's grant untouched.
@@ -96,9 +93,8 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
         f"{API}/collections/products/permissions/{member_a['id']}", headers=headers_b
     )
     assert b_revoke.status_code == 204
-    a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
-    assert a_list.status_code == 200
-    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
+    a_items = await _get_page(client, f"{API}/collections/products/permissions", headers_a, total=1)
+    assert [g["user_id"] for g in a_items] == [member_a["id"]]
 
     # B grants its own member on `products`: lands under B only.
     b_grant = await client.patch(
@@ -107,10 +103,10 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
         headers=headers_b,
     )
     assert b_grant.status_code == 200
-    b_list = await client.get(f"{API}/collections/products/permissions", headers=headers_b)
-    assert [g["user_id"] for g in b_list.json()["items"]] == [member_b["id"]]
-    a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
-    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
+    b_items = await _get_page(client, f"{API}/collections/products/permissions", headers_b, total=1)
+    assert [g["user_id"] for g in b_items] == [member_b["id"]]
+    a_items = await _get_page(client, f"{API}/collections/products/permissions", headers_a, total=1)
+    assert [g["user_id"] for g in a_items] == [member_a["id"]]
 
 
 @pytest.mark.parametrize("auth", AUTH_STYLES)
@@ -149,9 +145,8 @@ async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
         )
 
     # A's grant survives every cross-tenant attempt.
-    a_list = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
-    assert a_list.status_code == 200
-    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
+    a_items = await _get_page(client, f"{API}/collections/a-only/permissions", headers_a, total=1)
+    assert [g["user_id"] for g in a_items] == [member_a["id"]]
 
 
 @pytest.mark.parametrize("auth", AUTH_STYLES)
@@ -179,9 +174,8 @@ async def test_e3_forged_tenant_id_rejected_at_schema(
     assert forged.status_code == 422, forged.text
 
     # Fail-closed: nothing was written.
-    a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
-    assert a_list.status_code == 200
-    assert a_list.json()["items"] == []
+    a_items = await _get_page(client, f"{API}/collections/products/permissions", headers_a, total=0)
+    assert a_items == []
 
 
 @pytest.mark.parametrize("auth", AUTH_STYLES)
@@ -210,8 +204,7 @@ async def test_e8_negative_control_no_existence_oracle(
     )
 
     # And A, for whom the collection genuinely exists, sees grants fine.
-    a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
-    assert a_list.status_code == 200
+    await _get_page(client, f"{API}/collections/products/permissions", headers_a, total=0)
 
 
 @pytest.mark.parametrize("auth", AUTH_STYLES)
@@ -279,12 +272,10 @@ async def test_forged_tenant_id_in_path_cannot_reach_foreign_members(
         expected="TENANT_NOT_FOUND",
     )
 
-    # A's roles survive untouched: still the owner and the editor member.
-    a_list = await client.get(f"{API}/tenants/{tenant_a}/members", headers=headers_a)
-    assert a_list.status_code == 200
-    body = a_list.json()
-    assert body["total"] == 2  # no intruder was added
-    by_id = {m["id"]: m["role"] for m in body["items"]}
+    # A's roles survive untouched: still the owner and the editor member
+    # (the total of 2 proves no intruder was added).
+    members = await _get_page(client, f"{API}/tenants/{tenant_a}/members", headers_a, total=2)
+    by_id = {m["id"]: m["role"] for m in members}
     assert by_id[member_a["id"]] == "editor"  # B's demotion never landed
 
 
@@ -322,8 +313,7 @@ async def test_killed_key_loses_all_access_immediately(
 
     if kill == "revoke":
         # Prove the key was live a moment ago.
-        before = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
-        assert before.status_code == 200
+        await _get_page(client, f"{API}/collections/a-only/permissions", key_headers, total=0)
         revoked = await client.delete(
             f"{API}/api-keys/{body['id']}", headers=_auth_headers(reg_a["access_token"])
         )
@@ -383,8 +373,7 @@ async def test_revoked_key_loses_tenant_role_immediately(
     # the tenant read (any role passes) and the manage-gated grant list.
     read = await client.get(f"{API}/tenants/{tenant_id}", headers=key_headers)
     assert read.status_code == 200
-    grants = await client.get(f"{API}/collections/own/permissions", headers=key_headers)
-    assert grants.status_code == 200
+    await _get_page(client, f"{API}/collections/own/permissions", key_headers, total=0)
 
     revoked = await client.delete(f"{API}/api-keys/{body['id']}", headers=headers)
     assert revoked.status_code == 204
@@ -427,8 +416,7 @@ async def test_logged_out_access_token_dies_immediately(
     await _seed_collection(session_factory, tenant_b, "b-only")
 
     # Live right now: A's token passes on A's own resource.
-    before = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
-    assert before.status_code == 200
+    await _get_page(client, f"{API}/collections/a-only/permissions", headers_a, total=0)
 
     # Logout revokes both the refresh token and the presented access token.
     out = await client.post(
@@ -459,12 +447,12 @@ async def test_logged_out_access_token_dies_immediately(
         json={"email": reg_a["user"]["email"], "password": "password-123"},
     )
     assert relogin.status_code == 200
-    fresh = await client.get(
+    await _get_page(
+        client,
         f"{API}/collections/a-only/permissions",
-        headers=_auth_headers(relogin.json()["access_token"]),
+        _auth_headers(relogin.json()["access_token"]),
+        total=0,
     )
-    assert fresh.status_code == 200
 
     # ...and B's session is untouched.
-    b_ok = await client.get(f"{API}/collections/b-only/permissions", headers=headers_b)
-    assert b_ok.status_code == 200
+    await _get_page(client, f"{API}/collections/b-only/permissions", headers_b, total=0)

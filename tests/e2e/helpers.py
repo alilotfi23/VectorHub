@@ -8,7 +8,8 @@ the no-existence-oracle contract is enforced by construction in
 _assert_no_existence_oracle, so a new case can't forget half of it. The
 dead-credential variants (_dead_credential_401 /
 _assert_dead_credential_401) do the same for revoked, expired, and
-logged-out credentials.
+logged-out credentials. Positive-path reads flow through _get_page, which
+asserts the paginated envelope (items/total/next_cursor) consistently.
 
 The helpers assume the ASGI app + session override are wired via the
 `client` fixture in tests/e2e/conftest.py (migrated real Postgres).
@@ -176,3 +177,26 @@ async def _assert_dead_credential_401(
         for path in paths
     ]
     assert all(b == bodies[0] for b in bodies[1:])
+
+
+async def _get_page(
+    client: AsyncClient,
+    path: str,
+    headers: dict[str, str],
+    *,
+    total: int,
+) -> list[dict[str, Any]]:
+    """GET a cursor-paginated envelope and assert its shape: 200 with
+    `items` (one per `total`), `total`, and `next_cursor` None — every
+    isolation check fits on one page. Returns the items for content
+    assertions. The positive-path twin of _no_oracle_404: grants and
+    member-list reads flow through here so the envelope contract is
+    asserted consistently instead of hand-written per case."""
+    resp = await client.get(path, headers=headers)
+    assert resp.status_code == 200, f"GET {path}: {resp.status_code} {resp.text}"
+    body = cast(dict[str, Any], resp.json())
+    assert body["total"] == total
+    assert body["next_cursor"] is None
+    items = body["items"]
+    assert len(items) == total
+    return cast(list[dict[str, Any]], items)
