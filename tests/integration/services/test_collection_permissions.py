@@ -6,11 +6,12 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.pagination import Page
 from app.core.rbac import Permission, role_rank
 from app.core.security import Principal
 from app.db.models import AuditLog, Collection, CollectionPermission, User
 from app.services.auth_service import AuthService
-from app.services.collection_service import CollectionPermissionsPage, CollectionService
+from app.services.collection_service import CollectionService
 from app.services.tenant_service import TenantService
 
 
@@ -476,7 +477,7 @@ async def test_list_permissions_paginates_with_cursor(db: AsyncSession) -> None:
         await svc.grant_permission(owner, name=collection.name, user_id=member_ids[tag], role=role)
 
     # Walk with limit=2: 3 pages, each <= 2 items, total stable at 6.
-    pages: list[CollectionPermissionsPage] = []
+    pages: list[Page[CollectionPermission]] = []
     cursor: str | None = None
     for _ in range(5):
         page = await svc.list_permissions(owner, name=collection.name, limit=2, cursor=cursor)
