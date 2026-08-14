@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     batch_storage_secret_key: str = "minioadmin"
     batch_storage_bucket: str = "vectorhub-batches"
 
+    # OpenTelemetry export (Phase 7 pull-forward). None = spans are created
+    # and correlated (request_id -> trace_id) but dropped at the exporter
+    # boundary; set OTEL_EXPORTER_OTLP_ENDPOINT to stream them to a collector
+    # (standard OTEL_EXPORTER_* env vars apply on top).
+    otel_exporter_otlp_endpoint: str | None = None
+
     # Vector backends — adapters consume these from Phase 3 onward.
     qdrant_url: str = "http://localhost:6333"
     weaviate_url: str = "http://localhost:8080"

@@ -15,6 +15,7 @@ from app.main import _SignalNeutralServer
 from app.main import app as public_app
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.tracing import TraceMiddleware
 
 ADMIN_ROUTES = {route.path for route in admin_app.routes if isinstance(route, APIRoute)}
 PUBLIC_ROUTES = {route.path for route in public_app.routes if isinstance(route, APIRoute)}
@@ -40,12 +41,23 @@ def test_admin_app_serves_only_infra_endpoints() -> None:
 def test_admin_app_carries_no_public_middleware() -> None:
     """No auth-adjacent or request-shaping middleware on the admin app: a
     scrape must never be rate-limited or fail on a missing credential, and
-    its own traffic must not pollute the request counters it exposes."""
+    its own traffic must not pollute the request counters it exposes or
+    spawn trace spans."""
     middleware_classes = {m.cls for m in admin_app.user_middleware}
-    assert not middleware_classes & {RateLimitMiddleware, MetricsMiddleware, CORSMiddleware}
-    # The public app, by contrast, has all three.
+    assert not middleware_classes & {
+        RateLimitMiddleware,
+        MetricsMiddleware,
+        CORSMiddleware,
+        TraceMiddleware,
+    }
+    # The public app, by contrast, has all four.
     public_classes = {m.cls for m in public_app.user_middleware}
-    assert public_classes & {RateLimitMiddleware, MetricsMiddleware, CORSMiddleware}
+    assert public_classes & {
+        RateLimitMiddleware,
+        MetricsMiddleware,
+        CORSMiddleware,
+        TraceMiddleware,
+    }
 
 
 def test_signal_neutral_server_does_not_capture_signals() -> None:

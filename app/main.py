@@ -17,12 +17,15 @@ from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
 from app.core.logging import setup_logging
+from app.core.tracing import setup_tracing
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.tracing import TraceMiddleware
 
 settings = get_settings()
 
 setup_logging()
+setup_tracing()
 
 
 @asynccontextmanager
@@ -66,6 +69,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request-ID + OpenTelemetry correlation wraps everything (including CORS
+# and rate-limit 429s), so every request gets a trace and a logged request
+# ID no matter where it stops. Registered last = outermost.
+app.add_middleware(TraceMiddleware)
 
 # The public app deliberately exposes NO /health or /metrics route — those
 # live on app.admin (the internal admin app), so public traffic can't reach
