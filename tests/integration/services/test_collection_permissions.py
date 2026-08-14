@@ -10,6 +10,7 @@ from app.core.pagination import Page
 from app.core.rbac import Permission, role_rank
 from app.core.security import Principal
 from app.db.models import AuditLog, Collection, CollectionPermission, User
+from app.services.api_key_service import ApiKeyService
 from app.services.auth_service import AuthService
 from app.services.collection_service import CollectionService
 from app.services.tenant_service import TenantService
@@ -51,6 +52,19 @@ async def _add_viewer_member(db: AsyncSession, owner: Principal) -> tuple[User, 
         role="viewer",
     )
     return member, Principal(user_id=member.id, tenant_id=owner.tenant_id, role="viewer")
+
+
+async def _key_principal(db: AsyncSession, owner: Principal, role: str = "owner") -> Principal:
+    """Mint an API key for the tenant and derive its Principal exactly as
+    authentication does: user_id is None and api_key_id is set — a
+    key-derived principal carries tenant identity and role only, never a
+    resource-level grant."""
+    _, plaintext = await ApiKeyService(db).create_key(owner, name="layer2-key", role=role)
+    principal = await ApiKeyService(db).authenticate(plaintext)
+    assert principal is not None
+    assert principal.user_id is None
+    assert principal.api_key_id is not None
+    return principal
 
 
 async def test_grant_upsert_and_check_access(db: AsyncSession) -> None:
@@ -516,3 +530,70 @@ async def test_list_permissions_rejects_malformed_cursor(db: AsyncSession) -> No
         )
     assert exc.value.code == ErrorCode.VALIDATION_INVALID_CURSOR
     assert exc.value.status_code == 422
+
+
+async def test_key_principal_flow_resolves_collection_once(db: AsyncSession) -> None:
+    """The resolve-once contract holds for key-derived principals: a key
+    principal resolves the collection once (via check_access) and the grant
+    service calls reuse that access — no second collections lookup."""
+    _, owner = await _register(db, "org")
+    _, viewer = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    key_principal = await _key_principal(db, owner)
+
+    collection_selects: list[str] = []
+
+    def _count(
+        conn: object,
+        cursor: object,
+        statement: object,
+        params: object,
+        context: object,
+        executemany: bool,
+    ) -> None:  # noqa: ANN001
+        sql = str(statement).strip().lower()
+        if sql.startswith("select") and "from collections " in sql:
+            collection_selects.append(sql)
+
+    bind = db.get_bind()
+    engine = getattr(bind, "sync_engine", bind)
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        # The dependency's resolution: exactly one collections SELECT.
+        access = await svc.check_access(
+            key_principal, Permission.TENANT_MANAGE, name=collection.name
+        )
+        assert len(collection_selects) == 1
+
+        # The handler's service calls reuse that access: still one SELECT.
+        await svc.grant_permission(
+            key_principal, access=access, user_id=viewer.user_id or "", role="editor"
+        )
+        await svc.list_permissions(key_principal, access=access)
+        await svc.revoke_permission(key_principal, access=access, user_id=viewer.user_id or "")
+        assert len(collection_selects) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+
+async def test_key_principal_has_no_resource_grant(db: AsyncSession) -> None:
+    """Keys carry tenant-level roles only: resolve_access always yields
+    actor_grant=None for a key principal (grant lookups match on user_id,
+    which keys don't have), so the tenant role is the ceiling."""
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    owner_key = await _key_principal(db, owner)
+    editor_key = await _key_principal(db, owner, role="editor")
+
+    access = await svc.resolve_access(owner_key, name=collection.name)
+    assert access.actor_grant is None
+
+    # Owner-rank key: the tenant role alone passes the manage gate.
+    assert await svc.check_access(owner_key, Permission.TENANT_MANAGE, name=collection.name)
+    # Editor-rank key: no grant to elevate it, so manage is denied.
+    with pytest.raises(AppError) as exc:
+        await svc.check_access(editor_key, Permission.TENANT_MANAGE, name=collection.name)
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+    assert exc.value.status_code == 403

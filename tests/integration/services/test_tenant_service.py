@@ -9,6 +9,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.core.pagination import Page
 from app.core.security import Principal, hash_password
 from app.db.models import AuditLog, User
+from app.services.api_key_service import ApiKeyService
 from app.services.auth_service import AuthService
 from app.services.tenant_service import TenantService
 
@@ -346,6 +347,65 @@ async def test_member_flow_resolves_tenant_once(db: AsyncSession) -> None:
         await svc.list_members(owner, tenant=tenant)
         await svc.change_member_role(owner, tenant=tenant, user_id=member.id, role="editor")
         assert len(tenant_selects) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+
+async def test_member_flow_resolves_tenant_once_for_key_principal(db: AsyncSession) -> None:
+    """The resolve-once contract holds for key-derived principals on the
+    member surface too: a key principal resolves the tenant once and the
+    member service calls reuse it — no second tenants lookup."""
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+
+    # Mint an API key and derive its principal exactly as authentication does.
+    _, plaintext = await ApiKeyService(db).create_key(owner, name="layer2-key", role="owner")
+    key_principal = await ApiKeyService(db).authenticate(plaintext)
+    assert key_principal is not None
+    assert key_principal.user_id is None
+
+    tenant_selects: list[str] = []
+
+    def _count(
+        conn: object,
+        cursor: object,
+        statement: object,
+        params: object,
+        context: object,
+        executemany: bool,
+    ) -> None:  # noqa: ANN001
+        sql = str(statement).strip().lower()
+        if sql.startswith("select") and "from tenants " in sql:
+            tenant_selects.append(sql)
+
+    bind = db.get_bind()
+    engine = getattr(bind, "sync_engine", bind)
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        # The dependency's resolution: exactly one tenants SELECT.
+        tenant = await svc.resolve_tenant(key_principal, tenant_id=owner.tenant_id)
+        assert len(tenant_selects) == 1
+
+        # The handler's service calls reuse that tenant: still one SELECT.
+        member = await svc.add_member(
+            key_principal,
+            tenant=tenant,
+            email=_unique("key@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+        await svc.list_members(key_principal, tenant=tenant)
+        await svc.change_member_role(key_principal, tenant=tenant, user_id=member.id, role="editor")
+        assert len(tenant_selects) == 1
+
+        # Key principals audit without a user identity (actor_id is None).
+        row = await db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "member.added", AuditLog.resource_id == member.id
+            )
+        )
+        assert row is not None
+        assert row.actor_id is None
     finally:
         event.remove(engine, "before_cursor_execute", _count)
 
