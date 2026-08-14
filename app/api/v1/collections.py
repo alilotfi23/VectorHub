@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_principal, require_collection_permission
@@ -6,6 +6,7 @@ from app.core.rbac import Permission
 from app.core.security import Principal
 from app.db.session import get_session
 from app.schemas.collections import (
+    CollectionPermissionListResponse,
     CollectionPermissionResponse,
     CollectionPermissionUpdateRequest,
 )
@@ -37,23 +38,33 @@ async def update_collection_permissions(
     )
 
 
-@router.get("/{name}/permissions", response_model=list[CollectionPermissionResponse])
+@router.get("/{name}/permissions", response_model=CollectionPermissionListResponse)
 async def list_collection_permissions(
+    limit: int = Query(default=50, ge=1, le=200, description="Page size"),
+    cursor: str | None = Query(
+        default=None, description="Opaque keyset cursor from a previous page"
+    ),
     access: CollectionAccess = Depends(require_collection_permission(Permission.TENANT_MANAGE)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
-) -> list[CollectionPermissionResponse]:
-    grants = await CollectionService(session).list_permissions(principal, access=access)
-    return [
-        CollectionPermissionResponse(
-            collection_id=grant.collection_id,
-            collection_name=access.collection.name,
-            user_id=grant.user_id,
-            role=grant.permission,
-            created_at=grant.created_at,
-        )
-        for grant in grants
-    ]
+) -> CollectionPermissionListResponse:
+    page = await CollectionService(session).list_permissions(
+        principal, access=access, limit=limit, cursor=cursor
+    )
+    return CollectionPermissionListResponse(
+        items=[
+            CollectionPermissionResponse(
+                collection_id=grant.collection_id,
+                collection_name=access.collection.name,
+                user_id=grant.user_id,
+                role=grant.permission,
+                created_at=grant.created_at,
+            )
+            for grant in page.items
+        ],
+        next_cursor=page.next_cursor,
+        total=page.total,
+    )
 
 
 @router.delete("/{name}/permissions/{user_id}", status_code=204)

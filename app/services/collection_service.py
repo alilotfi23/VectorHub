@@ -24,9 +24,10 @@ scoped to the principal's own tenant (name-based cross-tenant disambiguation
 is a Phase 3+ concern).
 """
 
+import base64
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +51,36 @@ class CollectionAccess:
 
     collection: Collection
     actor_grant: CollectionPermission | None
+
+
+@dataclass(frozen=True)
+class CollectionPermissionsPage:
+    """One page of the cursor-paginated grant list."""
+
+    items: list[CollectionPermission]
+    next_cursor: str | None  # opaque keyset cursor; None = last page
+    total: int
+
+
+def _encode_grant_cursor(permission: str, user_id: str) -> str:
+    """Opaque keyset cursor for the (role rank DESC, user_id ASC) sort."""
+    raw = f"{role_rank(permission)}:{user_id}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
+
+
+def _decode_grant_cursor(cursor: str) -> tuple[int, str]:
+    """Decode a cursor; malformed cursors are a client error (422)."""
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+        rank_str, user_id = raw.split(":", 1)
+        rank = int(rank_str)
+    except (ValueError, UnicodeDecodeError):
+        raise AppError(
+            ErrorCode.VALIDATION_INVALID_CURSOR, "Invalid cursor", status_code=422
+        ) from None
+    if rank not in {role_rank(role) for role in VALID_ROLES} or not user_id:
+        raise AppError(ErrorCode.VALIDATION_INVALID_CURSOR, "Invalid cursor", status_code=422)
+    return rank, user_id
 
 
 class CollectionService:
@@ -232,18 +263,24 @@ class CollectionService:
         self,
         actor: Principal,
         *,
+        limit: int = 50,
+        cursor: str | None = None,
         name: str | None = None,
         access: CollectionAccess | None = None,
-    ) -> list[CollectionPermission]:
-        """List a collection's resource-level grants for introspection.
+    ) -> CollectionPermissionsPage:
+        """List a collection's resource-level grants for introspection,
+        cursor-paginated so large grant lists are never fully materialized.
 
         Same manage gate as grant/revoke: grant state is access-control state,
         and only managers should be able to enumerate who holds elevated roles
         on a collection. Tenant-scoped resolution (no existence oracle).
 
-        Ordering is deterministic: role rank descending (owners first), then
-        user_id. created_at is a Python-side default that can tie within a
-        batch, so it must not be the sort key.
+        Keyset pagination over the deterministic sort — role rank descending
+        (owners first), then user_id. The rank CASE is derived from the
+        canonical role_rank mapping; created_at is a Python-side default that
+        can tie within a batch, so it must not be part of the sort key. The
+        opaque cursor encodes (rank, user_id) of the last returned item, so
+        pages resume exactly regardless of page size.
         """
         access = await self._access_for(actor, name=name, access=access)
         collection, actor_grant = access.collection, access.actor_grant
@@ -254,9 +291,37 @@ class CollectionService:
                 "Admin or owner role required to view grants",
                 status_code=403,
             )
-        rows = await self._session.scalars(
-            select(CollectionPermission).where(CollectionPermission.collection_id == collection.id)
+
+        total = await self._session.scalar(
+            select(func.count())
+            .select_from(CollectionPermission)
+            .where(CollectionPermission.collection_id == collection.id)
         )
-        # Sort in Python: role_rank stays the single source of truth for role
-        # ordering, and the list is bounded (one grant per tenant member).
-        return sorted(rows, key=lambda g: (-role_rank(g.permission), g.user_id))
+        assert total is not None
+
+        rank_case = case(
+            {role: role_rank(role) for role in VALID_ROLES},
+            value=CollectionPermission.permission,
+            else_=0,  # role_rank's default for unknown roles
+        )
+        stmt = (
+            select(CollectionPermission)
+            .where(CollectionPermission.collection_id == collection.id)
+            .order_by(rank_case.desc(), CollectionPermission.user_id)
+            .limit(limit + 1)  # +1 to detect whether another page exists
+        )
+        if cursor is not None:
+            cursor_rank, cursor_user_id = _decode_grant_cursor(cursor)
+            stmt = stmt.where(
+                or_(
+                    rank_case < cursor_rank,
+                    and_(rank_case == cursor_rank, CollectionPermission.user_id > cursor_user_id),
+                )
+            )
+        rows = list(await self._session.scalars(stmt))
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = (
+            _encode_grant_cursor(items[-1].permission, items[-1].user_id) if has_more else None
+        )
+        return CollectionPermissionsPage(items=items, next_cursor=next_cursor, total=total)

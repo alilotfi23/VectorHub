@@ -121,7 +121,10 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
     # B, with the identical name, sees nothing.
     b_list = await client.get(f"{API}/collections/products/permissions", headers=headers_b)
     assert b_list.status_code == 200
-    assert b_list.json() == []
+    body = b_list.json()
+    assert body["items"] == []
+    assert body["total"] == 0
+    assert body["next_cursor"] is None
 
     # B tries to revoke A's grantee by user_id on the same name: resolves to
     # B's own collection row, no-op 204, A's grant untouched.
@@ -131,7 +134,7 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
     assert b_revoke.status_code == 204
     a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
     assert a_list.status_code == 200
-    assert [g["user_id"] for g in a_list.json()] == [member_a["id"]]
+    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
 
     # B grants its own member on `products`: lands under B only.
     b_grant = await client.patch(
@@ -141,9 +144,9 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
     )
     assert b_grant.status_code == 200
     b_list = await client.get(f"{API}/collections/products/permissions", headers=headers_b)
-    assert [g["user_id"] for g in b_list.json()] == [member_b["id"]]
+    assert [g["user_id"] for g in b_list.json()["items"]] == [member_b["id"]]
     a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
-    assert [g["user_id"] for g in a_list.json()] == [member_a["id"]]
+    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
 
 
 async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
@@ -184,7 +187,7 @@ async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
     # A's grant survives every cross-tenant attempt.
     a_list = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
     assert a_list.status_code == 200
-    assert [g["user_id"] for g in a_list.json()] == [member_a["id"]]
+    assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
 
 
 async def test_e3_forged_tenant_id_rejected_at_schema(
@@ -213,7 +216,7 @@ async def test_e3_forged_tenant_id_rejected_at_schema(
     # Fail-closed: nothing was written.
     a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
     assert a_list.status_code == 200
-    assert a_list.json() == []
+    assert a_list.json()["items"] == []
 
 
 async def test_e8_negative_control_no_existence_oracle(

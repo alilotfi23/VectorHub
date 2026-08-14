@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission as Perm
+from app.core.rbac import role_rank
 from app.core.security import Principal
 from app.db.models import Collection
 from app.db.session import get_session
@@ -230,10 +231,12 @@ async def test_list_collection_permissions_route(
         session.add(collection)
         await session.commit()
 
-    # No grants yet: empty list.
+    # No grants yet: empty page.
     empty = await client.get(f"{API}/collections/products/permissions", headers=headers)
     assert empty.status_code == 200
-    assert empty.json() == []
+    assert empty.json()["items"] == []
+    assert empty.json()["total"] == 0
+    assert empty.json()["next_cursor"] is None
 
     # Grant two roles, then list — both grants come back with roles resolved.
     await client.patch(
@@ -248,8 +251,11 @@ async def test_list_collection_permissions_route(
     )
     listed = await client.get(f"{API}/collections/products/permissions", headers=headers)
     assert listed.status_code == 200, listed.text
-    grants = listed.json()
+    body = listed.json()
+    grants = body["items"]
     assert len(grants) == 2
+    assert body["total"] == 2
+    assert body["next_cursor"] is None
     assert all(g["collection_name"] == "products" for g in grants)
     # Rank-ordered (owner first), not creation-ordered (the member's editor
     # grant was created before the owner's).
@@ -272,3 +278,87 @@ async def test_list_collection_permissions_route(
     foreign = await client.get(f"{API}/collections/products/permissions", headers=foreign_headers)
     assert foreign.status_code == 404
     assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"
+
+
+async def test_list_collection_permissions_pagination(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    tenant_id = reg["user"]["tenant_id"]
+
+    member_ids: dict[str, str] = {}
+    for tag in ("e1", "e2", "v1"):
+        resp = await client.post(
+            f"{API}/tenants/{tenant_id}/members",
+            json={"email": _unique_email(f"pg-{tag}"), "password": "password-123"},
+            headers=headers,
+        )
+        assert resp.status_code == 201
+        member_ids[tag] = resp.json()["id"]
+
+    async with session_factory() as session:
+        collection = Collection(
+            tenant_id=tenant_id,
+            name="products",
+            backend="chroma",
+            dimension=8,
+            distance_metric="cosine",
+            physical_name=f"col_{uuid.uuid4().hex[:12]}",
+        )
+        session.add(collection)
+        await session.commit()
+
+    # 4 grants: the owner, two editors, one viewer.
+    for tag, role in (("e1", "editor"), ("e2", "editor"), ("v1", "viewer")):
+        await client.patch(
+            f"{API}/collections/products/permissions",
+            json={"user_id": member_ids[tag], "role": role},
+            headers=headers,
+        )
+    await client.patch(
+        f"{API}/collections/products/permissions",
+        json={"user_id": reg["user"]["id"], "role": "owner"},
+        headers=headers,
+    )
+
+    collected: list[tuple[str, str]] = []
+    cursor: str | None = None
+    pages = 0
+    for _ in range(5):
+        params: dict[str, str] = {"limit": "2"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        resp = await client.get(
+            f"{API}/collections/products/permissions", params=params, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 4
+        assert len(body["items"]) <= 2
+        collected.extend((g["role"], g["user_id"]) for g in body["items"])
+        pages += 1
+        if body["next_cursor"] is None:
+            break
+        cursor = body["next_cursor"]
+
+    assert pages == 2  # 4 grants, limit 2
+    assert len(collected) == 4
+    assert len({uid for _, uid in collected}) == 4  # no overlap, no gap
+    seq = [(role_rank(role), uid) for role, uid in collected]
+    assert seq == sorted(seq, key=lambda t: (-t[0], t[1]))
+
+    # Malformed cursor and out-of-range limit: 422, typed error.
+    bad_cursor = await client.get(
+        f"{API}/collections/products/permissions",
+        params={"cursor": "not-a-cursor"},
+        headers=headers,
+    )
+    assert bad_cursor.status_code == 422
+    assert bad_cursor.json()["error_code"] == "VALIDATION_INVALID_CURSOR"
+    bad_limit = await client.get(
+        f"{API}/collections/products/permissions",
+        params={"limit": 0},
+        headers=headers,
+    )
+    assert bad_limit.status_code == 422

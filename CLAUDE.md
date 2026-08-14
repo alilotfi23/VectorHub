@@ -106,7 +106,7 @@ POST   /api/v1/collections                      # body includes `backend` (weavi
 GET    /api/v1/collections
 GET    /api/v1/collections/{name}
 DELETE /api/v1/collections/{name}
-GET    /api/v1/collections/{name}/permissions   # list resource-level grants (admin/owner)
+GET    /api/v1/collections/{name}/permissions   # list resource-level grants, cursor-paginated (admin/owner; `limit` 1-200, default 50, opaque `cursor`)
 PATCH  /api/v1/collections/{name}/permissions   # RBAC grants on this collection
 DELETE /api/v1/collections/{name}/permissions/{user_id}   # revoke a user's resource-level grant (admin/owner; idempotent)
 PATCH  /api/v1/collections/{name}/config        # mutate index config post-creation (HNSW params, etc. — see note below)
@@ -168,7 +168,7 @@ All error responses use the standard `{error_code, message, details}` shape (see
 - `VECTOR_*` — e.g. `VECTOR_NOT_FOUND`, `VECTOR_DIMENSION_MISMATCH`, `VECTOR_DIMENSION_EXCEEDED`, `BATCH_SIZE_EXCEEDED`, `TOP_K_EXCEEDED`, `VECTOR_SPARSE_REQUIRED` (hybrid requested without sparse input/support on Qdrant/Milvus)
 - `JOB_*` — e.g. `JOB_NOT_FOUND`, `JOB_FAILED`, `JOB_PAYLOAD_INVALID` (whole-file validation failure on a batch job)
 - `RATE_LIMIT_*` — e.g. `RATE_LIMIT_TENANT_QPS`, `RATE_LIMIT_API_KEY_QPS`, `RATE_LIMIT_ROUTE_QPS` (these are the values that populate `details` on a `429`, per the Rate Limiting section above)
-- `VALIDATION_*` — generic Pydantic validation failures not covered by a more specific code above; e.g. `VALIDATION_UNSUPPORTED_OPERATION` (operation unsupported by a backend — `details.capability` names it)
+- `VALIDATION_*` — generic Pydantic validation failures not covered by a more specific code above; e.g. `VALIDATION_UNSUPPORTED_OPERATION` (operation unsupported by a backend — `details.capability` names it), `VALIDATION_INVALID_CURSOR` (malformed pagination cursor)
 
 Every new route added in any phase must map its error conditions to one of these namespaces before merging; if none fits, add the new code to this list in the same commit (not as an afterthought).
 

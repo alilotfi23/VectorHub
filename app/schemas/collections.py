@@ -27,3 +27,12 @@ class CollectionPermissionResponse(BaseModel):
     user_id: str
     role: str
     created_at: datetime
+
+
+class CollectionPermissionListResponse(BaseModel):
+    """Cursor-paginated grant list: `items` plus an opaque `next_cursor`
+    (None on the last page) and the total grant count."""
+
+    items: list[CollectionPermissionResponse]
+    next_cursor: str | None
+    total: int

@@ -95,15 +95,15 @@ async def test_same_name_collision_grants_are_isolated(db: AsyncSession) -> None
 
     # A sees its grant; B's identical name sees nothing.
     a_grants = await svc.list_permissions(owner_a, name="products")
-    assert [g.user_id for g in a_grants] == [viewer_a.user_id]
-    assert await svc.list_permissions(owner_b, name="products") == []
+    assert [g.user_id for g in a_grants.items] == [viewer_a.user_id]
+    assert (await svc.list_permissions(owner_b, name="products")).items == []
 
     # B revoking A's grantee by user_id lands on B's collection id — no such
     # grant exists there, so it's an idempotent no-op and A's grant survives.
     await svc.revoke_permission(owner_b, name="products", user_id=viewer_a.user_id or "")
     assert await _grant_count(db, coll_a.id) == 1
     a_grants = await svc.list_permissions(owner_a, name="products")
-    assert [g.user_id for g in a_grants] == [viewer_a.user_id]
+    assert [g.user_id for g in a_grants.items] == [viewer_a.user_id]
 
     # A's grant never leaks into B's resolution either way.
     assert await _grant_count(db, coll_b.id) == 0
@@ -130,7 +130,7 @@ async def test_cross_tenant_ops_fail_closed_without_writes(db: AsyncSession) -> 
 
     # Fail-closed means no partial writes: B's grants untouched, and no
     # stray rows created under B's collection by A's attempts.
-    assert await svc.list_permissions(owner_b, name="products") == []
+    assert (await svc.list_permissions(owner_b, name="products")).items == []
     assert await _grant_count(db, coll_b.id) == 0
 
 

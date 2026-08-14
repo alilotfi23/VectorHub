@@ -6,11 +6,11 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.rbac import Permission
+from app.core.rbac import Permission, role_rank
 from app.core.security import Principal
 from app.db.models import AuditLog, Collection, CollectionPermission, User
 from app.services.auth_service import AuthService
-from app.services.collection_service import CollectionService
+from app.services.collection_service import CollectionPermissionsPage, CollectionService
 from app.services.tenant_service import TenantService
 
 
@@ -260,16 +260,21 @@ async def test_list_permissions_returns_grants(db: AsyncSession) -> None:
         owner, name=collection.name, user_id=owner.user_id or "", role="owner"
     )
 
-    grants = await svc.list_permissions(owner, name=collection.name)
-    assert len(grants) == 2
-    by_user = {g.user_id: g.permission for g in grants}
+    page = await svc.list_permissions(owner, name=collection.name)
+    assert len(page.items) == 2
+    assert page.total == 2
+    assert page.next_cursor is None  # both grants fit on one page
+    by_user = {g.user_id: g.permission for g in page.items}
     assert by_user == {viewer.user_id: "editor", owner.user_id: "owner"}
 
 
 async def test_list_permissions_empty(db: AsyncSession) -> None:
     _, owner = await _register(db, "org")
     collection = await _add_collection(db, owner.tenant_id)
-    assert await CollectionService(db).list_permissions(owner, name=collection.name) == []
+    page = await CollectionService(db).list_permissions(owner, name=collection.name)
+    assert page.items == []
+    assert page.total == 0
+    assert page.next_cursor is None
 
 
 async def test_list_permissions_foreign_collection(db: AsyncSession) -> None:
@@ -299,8 +304,8 @@ async def test_list_permissions_requires_manage(db: AsyncSession) -> None:
         owner, name=collection.name, user_id=owner.user_id or "", role="admin"
     )
     elevated = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="viewer")
-    grants = await CollectionService(db).list_permissions(elevated, name=collection.name)
-    assert len(grants) == 1
+    page = await CollectionService(db).list_permissions(elevated, name=collection.name)
+    assert len(page.items) == 1
 
 
 async def test_list_permissions_ordered_by_role_then_user_id(db: AsyncSession) -> None:
@@ -338,8 +343,8 @@ async def test_list_permissions_ordered_by_role_then_user_id(db: AsyncSession) -
     )
     await db.commit()
 
-    grants = await CollectionService(db).list_permissions(owner, name=collection.name)
-    assert [(g.permission, g.user_id) for g in grants] == [
+    page = await CollectionService(db).list_permissions(owner, name=collection.name)
+    assert [(g.permission, g.user_id) for g in page.items] == [
         ("owner", owner.user_id or ""),
         ("viewer", min(viewer_a.user_id or "", viewer_b.user_id or "")),
         ("viewer", max(viewer_a.user_id or "", viewer_b.user_id or "")),
@@ -360,11 +365,12 @@ async def test_service_methods_reuse_pre_resolved_access(db: AsyncSession) -> No
     await svc.grant_permission(owner, access=access, user_id=viewer.user_id or "", role="editor")
     assert await svc.check_access(viewer, Permission.COLLECTION_WRITE, name=collection.name)
 
-    grants = await svc.list_permissions(owner, access=access)
-    assert [g.user_id for g in grants] == [viewer.user_id]
+    page = await svc.list_permissions(owner, access=access)
+    assert [g.user_id for g in page.items] == [viewer.user_id]
 
     await svc.revoke_permission(owner, access=access, user_id=viewer.user_id or "")
-    assert await svc.list_permissions(owner, access=access) == []
+    page = await svc.list_permissions(owner, access=access)
+    assert page.items == []
 
     # Gates still fire on the access path: an editor without manage is rejected.
     editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
@@ -438,3 +444,74 @@ async def test_grant_flow_resolves_collection_once(db: AsyncSession) -> None:
         assert len(collection_selects) == 1
     finally:
         event.remove(engine, "before_cursor_execute", _count)
+
+
+async def test_list_permissions_paginates_with_cursor(db: AsyncSession) -> None:
+    """Walking the cursor returns every grant exactly once, in global
+    deterministic order, with a stable total; the cursor resumes correctly
+    even when the page size changes."""
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    tenant_svc = TenantService(db)
+
+    member_ids: dict[str, str] = {}
+    for tag in ("o", "e1", "e2", "v1", "v2", "v3"):
+        member = await tenant_svc.add_member(
+            owner,
+            tenant_id=owner.tenant_id,
+            email=_unique(f"{tag}@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+        member_ids[tag] = member.id
+    for tag, role in (
+        ("o", "owner"),
+        ("e1", "editor"),
+        ("e2", "editor"),
+        ("v1", "viewer"),
+        ("v2", "viewer"),
+        ("v3", "viewer"),
+    ):
+        await svc.grant_permission(owner, name=collection.name, user_id=member_ids[tag], role=role)
+
+    # Walk with limit=2: 3 pages, each <= 2 items, total stable at 6.
+    pages: list[CollectionPermissionsPage] = []
+    cursor: str | None = None
+    for _ in range(5):
+        page = await svc.list_permissions(owner, name=collection.name, limit=2, cursor=cursor)
+        pages.append(page)
+        assert page.total == 6
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+
+    assert [g.permission for g in pages[0].items] == ["owner", "editor"]
+    assert [g.permission for g in pages[1].items] == ["editor", "viewer"]
+    assert [g.permission for g in pages[2].items] == ["viewer", "viewer"]
+    assert len(pages) == 3
+    all_ids = [g.user_id for page in pages for g in page.items]
+    assert len(all_ids) == 6 and len(set(all_ids)) == 6  # no overlap, no gap
+    # Concatenation preserves the global deterministic order.
+    seq = [(role_rank(g.permission), g.user_id) for page in pages for g in page.items]
+    assert seq == sorted(seq, key=lambda t: (-t[0], t[1]))
+
+    # Resuming with a different page size continues exactly from the cursor.
+    p = await svc.list_permissions(owner, name=collection.name, limit=3)
+    assert len(p.items) == 3 and p.next_cursor is not None
+    p2 = await svc.list_permissions(owner, name=collection.name, limit=2, cursor=p.next_cursor)
+    assert [g.permission for g in p2.items] == ["viewer", "viewer"]
+    p3 = await svc.list_permissions(owner, name=collection.name, limit=2, cursor=p2.next_cursor)
+    assert [g.permission for g in p3.items] == ["viewer"]
+    assert p3.next_cursor is None
+
+
+async def test_list_permissions_rejects_malformed_cursor(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).list_permissions(
+            owner, name=collection.name, cursor="not-a-cursor"
+        )
+    assert exc.value.code == ErrorCode.VALIDATION_INVALID_CURSOR
+    assert exc.value.status_code == 422
