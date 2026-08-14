@@ -18,26 +18,25 @@ docs/superpowers/specs/2026-08-14-tenant-isolation-tests-design.md.
 
 import uuid
 from collections.abc import AsyncGenerator
-from typing import Any, cast
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Collection
 from app.db.session import get_session
 from app.main import app
-
-API = "/api/v1"
-
-
-def _unique(prefix: str) -> str:
-    return f"{prefix}-{uuid.uuid4().hex[:10]}"
-
-
-def _unique_email(local: str = "user") -> str:
-    # Suffix goes in the local part: EmailStr validates the domain strictly.
-    return f"{local}-{uuid.uuid4().hex[:10]}@example.com"
+from tests.e2e.helpers import (
+    API,
+    AUTH_STYLES,
+    _assert_no_existence_oracle,
+    _auth_headers,
+    _no_oracle_404,
+    _principal_headers,
+    _provision_member,
+    _register,
+    _seed_collection,
+    _unique_email,
+)
 
 
 @pytest.fixture
@@ -53,111 +52,6 @@ async def client(
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
-
-
-async def _register(client: AsyncClient, tag: str = "user") -> dict[str, Any]:
-    body = {
-        "email": _unique_email(tag),
-        "password": "password-123",
-        "tenant_name": _unique(tag),
-    }
-    resp = await client.post(f"{API}/auth/register", json=body)
-    assert resp.status_code == 201, resp.text
-    return cast(dict[str, Any], resp.json())
-
-
-def _auth_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-AUTH_STYLES = ("jwt", "api_key")
-
-
-async def _principal_headers(client: AsyncClient, reg: dict[str, Any], auth: str) -> dict[str, str]:
-    """Per-tenant principal credentials: a Bearer token (JWT) or a per-tenant
-    API key minted at owner rank (the grants surface requires TENANT_MANAGE)
-    — the design doc's two-principal-types requirement."""
-    if auth == "jwt":
-        return _auth_headers(reg["access_token"])
-    created = await client.post(
-        f"{API}/api-keys",
-        json={"name": f"iso-{uuid.uuid4().hex[:10]}", "role": "owner"},
-        headers=_auth_headers(reg["access_token"]),
-    )
-    assert created.status_code == 201, created.text
-    return {"X-API-Key": created.json()["key"]}
-
-
-async def _seed_collection(
-    session_factory: async_sessionmaker[AsyncSession], tenant_id: str, name: str
-) -> None:
-    # The create-collection route lands in Phase 3; seed the registry row
-    # directly like the integration API tests do.
-    async with session_factory() as session:
-        collection = Collection(
-            tenant_id=tenant_id,
-            name=name,
-            backend="chroma",
-            dimension=8,
-            distance_metric="cosine",
-            physical_name=f"col_{uuid.uuid4().hex[:12]}",
-        )
-        session.add(collection)
-        await session.commit()
-
-
-async def _provision_member(
-    client: AsyncClient, headers: dict[str, str], tenant_id: str
-) -> dict[str, Any]:
-    resp = await client.post(
-        f"{API}/tenants/{tenant_id}/members",
-        json={"email": _unique_email("member"), "password": "password-123"},
-        headers=headers,
-    )
-    assert resp.status_code == 201, resp.text
-    return cast(dict[str, Any], resp.json())
-
-
-async def _no_oracle_404(
-    client: AsyncClient,
-    method: str,
-    path: str,
-    headers: dict[str, str],
-    *,
-    expected: str,
-    body: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Fire one cross-tenant no-oracle probe: assert the fail-closed 404
-    with the expected error_code and return the body so callers can compare
-    probes byte-for-byte. Every isolation 404 assertion flows through here,
-    so the suite's no-oracle discipline is enforced in one place."""
-    resp = await client.request(method, path, json=body, headers=headers)
-    assert resp.status_code == 404, f"{method} {path}: {resp.status_code} {resp.text}"
-    assert resp.json()["error_code"] == expected
-    return cast(dict[str, Any], resp.json())
-
-
-async def _assert_no_existence_oracle(
-    client: AsyncClient,
-    *,
-    method: str,
-    real_path: str,
-    missing_path: str,
-    headers: dict[str, str],
-    expected: str,
-    body: dict[str, Any] | None = None,
-) -> None:
-    """Prove responses can't act as an existence oracle: a probe of a target
-    that exists in another tenant and a probe of a target that exists nowhere
-    must be byte-identical fail-closed 404s with the expected error_code.
-    Byte-identity is enforced by construction — both probes flow through
-    _no_oracle_404 and their bodies are compared here, so no caller can
-    forget the comparison."""
-    real = await _no_oracle_404(client, method, real_path, headers, expected=expected, body=body)
-    missing = await _no_oracle_404(
-        client, method, missing_path, headers, expected=expected, body=body
-    )
-    assert real == missing
 
 
 @pytest.mark.parametrize("auth", AUTH_STYLES)
