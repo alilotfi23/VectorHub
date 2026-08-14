@@ -12,17 +12,32 @@ from typing import cast
 
 import structlog
 
+from app.core.config import get_settings
+
 
 def setup_logging() -> None:
-    """Configure structlog once at app startup (idempotent re-configurable)."""
+    """Configure structlog at app startup (idempotent re-configurable).
+
+    The terminal renderer is env-driven: ``LOG_FORMAT=json`` selects the
+    JSON renderer (one object per line, for staging/prod log pipelines);
+    anything else uses the human-readable console renderer (dev default).
+    The processor chain is otherwise identical, so the event fields are the
+    same either way.
+    """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    settings = get_settings()
+    renderer: structlog.types.Processor = (
+        structlog.processors.JSONRenderer()
+        if settings.log_format == "json"
+        else structlog.dev.ConsoleRenderer()
+    )
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.format_exc_info,
-            structlog.dev.ConsoleRenderer(),
+            renderer,
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),

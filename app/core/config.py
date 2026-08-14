@@ -11,6 +11,9 @@ class Settings(BaseSettings):
 
     app_name: str = "vectorhub-platform"
     environment: str = "dev"
+    # Structured log rendering: "console" (human-readable, dev default) or
+    # "json" (one JSON object per line — set LOG_FORMAT=json in staging/prod).
+    log_format: str = "console"
 
     # --- Auth / JWT (Phase 2) ---
     # HS256 with a strong secret. The dev default is a trap: prod refuses to
