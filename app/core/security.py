@@ -33,9 +33,9 @@ class Principal:
     API-key row the presented key hashes to.
     """
 
-    user_id: str
     tenant_id: str
     role: str
+    user_id: str | None = None  # None for API-key principals (no user behind the key)
     is_platform_admin: bool = False
     api_key_id: str | None = None
 

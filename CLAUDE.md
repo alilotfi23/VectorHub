@@ -156,8 +156,9 @@ To close DoS exposure on the vector write/query paths, the following limits are 
 
 All error responses use the standard `{error_code, message, details}` shape (see Non-Functional Requirements). `error_code` values are namespaced by domain, `SCREAMING_SNAKE_CASE`, and defined as an enum in `app/core/exceptions.py` — routes and services raise typed exceptions that map to these, never raw strings. Namespaces (extend within a namespace as needed, but don't introduce new namespaces without updating this list):
 
-- `AUTH_*` — e.g. `AUTH_INVALID_CREDENTIALS`, `AUTH_TOKEN_EXPIRED`, `AUTH_TOKEN_REVOKED`, `AUTH_INSUFFICIENT_SCOPE`
-- `TENANT_*` — e.g. `TENANT_NOT_FOUND`, `TENANT_QUOTA_EXCEEDED`
+- `AUTH_*` — e.g. `AUTH_INVALID_CREDENTIALS`, `AUTH_TOKEN_EXPIRED`, `AUTH_TOKEN_REVOKED`, `AUTH_INSUFFICIENT_SCOPE`, `AUTH_EMAIL_TAKEN`
+- `API_KEY_*` — e.g. `API_KEY_NOT_FOUND`
+- `TENANT_*` — e.g. `TENANT_NOT_FOUND`, `TENANT_ALREADY_EXISTS`, `TENANT_QUOTA_EXCEEDED`
 - `COLLECTION_*` — e.g. `COLLECTION_NOT_FOUND`, `COLLECTION_ALREADY_EXISTS`, `COLLECTION_BACKEND_UNAVAILABLE`, `REQUIRES_REINDEX`, `REINDEX_NOT_IMPLEMENTED`
 - `VECTOR_*` — e.g. `VECTOR_NOT_FOUND`, `VECTOR_DIMENSION_MISMATCH`, `VECTOR_DIMENSION_EXCEEDED`, `BATCH_SIZE_EXCEEDED`, `TOP_K_EXCEEDED`, `VECTOR_SPARSE_REQUIRED` (hybrid requested without sparse input/support on Qdrant/Milvus)
 - `JOB_*` — e.g. `JOB_NOT_FOUND`, `JOB_FAILED`, `JOB_PAYLOAD_INVALID` (whole-file validation failure on a batch job)
