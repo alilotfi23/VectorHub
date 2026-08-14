@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator import metrics as instrumentator_metrics
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import api_keys, auth, collections, tenants
@@ -36,6 +38,14 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 # rate-limit middleware, so it is registered last (outermost).
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(MetricsMiddleware)
+
+# Request-duration histograms and request/response size metrics (Phase 7
+# pull-forward). Registers on the shared default registry, so the existing
+# /metrics route renders these series alongside the platform counters.
+_instrumentator = Instrumentator(should_group_status_codes=True)
+_instrumentator.add(instrumentator_metrics.default())
+_instrumentator.instrument(app)
+
 app.add_exception_handler(AppError, error_response_handler)
 
 app.include_router(auth.router, prefix="/api/v1")

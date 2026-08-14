@@ -259,6 +259,8 @@ When a session starts, work on the next unchecked phase below unless told otherw
 
 _Update this section at the end of each phase. Newest entry on top._
 
+- **2026-08-14** — Pull-forward: request-duration histograms + request/response size metrics via `prometheus-fastapi-instrumentator` (v8, `Instrumentator(should_group_status_codes=True)` + `metrics.default()`), registered on the shared default registry so the existing `/metrics` route renders them alongside the `vhk_*` counters; handler label is templated (status grouped to 2xx/4xx), size metrics are Summaries. The previous entry's "latency histograms remain Phase 7" note is now obsolete.
+
 - **2026-08-14** — Pull-forward: structured logging (structlog, stdlib-integrated, `app/core/logging.py`) + rate-limit observability — every 429 emits one `rate_limit_exceeded` log line (limit, retry_after, method, path, tenant/key ids — never secrets) and increments `vhk_rate_limit_rejections_total{limit=...}`, asserted via a deterministic unit test (stub logger) plus the /metrics counter series.
 
 - **2026-08-14** — Pull-forward: `GET /metrics` (Prometheus text format, `prometheus-client`) with two counter families — `vhk_requests_total` (method/route-path/status, labels reconstructed post-routing so dynamic segments collapse to the template, including 4xx/5xx and rate-limit 429s) and `vhk_health_checks_total` (per-check ok/down outcomes recorded by the health service). Latency histograms + instrumentator remain Phase 7.

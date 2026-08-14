@@ -9,9 +9,10 @@ Two counter families, both cheap and process-local:
   check, labeled by check (``postgres``/``redis``/``workers``/``adapter:<name>``)
   and status (``ok``/``down``).
 
-Counters are the foundation; request latency histograms land with Phase 7's
-prometheus-fastapi-instrumentator pass. GET /metrics renders the default
-registry in the Prometheus text format.
+GET /metrics renders the default registry in the Prometheus text format,
+so the prometheus-fastapi-instrumentator series (request-duration
+histograms, request/response sizes — registered in main.py on the same
+shared registry) appear alongside these counters.
 """
 
 from fastapi.responses import Response

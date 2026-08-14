@@ -54,6 +54,21 @@ async def test_metrics_counts_requests_and_health_outcomes(
     assert 'vhk_health_checks_total{check="redis",status="ok"}' in body
     assert 'vhk_health_checks_total{check="workers",status="down"}' in body
 
+    # Instrumentator series (Phase 7 pull-forward): the standard request
+    # counter (status grouped, handler templated) plus duration histograms
+    # and request/response size summaries — recorded for the requests above.
+    assert "http_requests_total" in body
+    assert (
+        'http_requests_total{handler="/api/v1/tenants/{tenant_id}",method="GET",status="4xx"}'
+        in body
+    )
+    assert "http_request_duration_seconds_bucket" in body
+    assert "http_request_duration_highr_seconds_bucket" in body
+    assert 'le="+Inf"' in body
+    assert "http_request_size_bytes_count" in body  # Summary: _count/_sum, no buckets
+    assert "http_response_size_bytes_count" in body
+    assert 'status="2xx"' in body
+
 
 async def test_metrics_counts_rate_limited_requests(
     client: AsyncClient, redis_url: str, monkeypatch: pytest.MonkeyPatch
