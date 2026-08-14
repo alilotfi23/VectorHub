@@ -55,6 +55,7 @@ extend-immutable-calls = [
     "fastapi.Body",
     "app.api.deps.require_permission",
     "app.api.deps.require_collection_permission",
+    "app.api.deps.require_tenant_access",
 ]
 
 [tool.mypy]

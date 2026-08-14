@@ -1,9 +1,15 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission, require_platform_admin
+from app.api.deps import (
+    get_current_principal,
+    require_permission,
+    require_platform_admin,
+    require_tenant_access,
+)
 from app.core.rbac import Permission
 from app.core.security import Principal
+from app.db.models import Tenant
 from app.db.session import get_session
 from app.schemas.auth import (
     MemberCreateRequest,
@@ -39,24 +45,24 @@ async def get_tenant(
 
 @router.get("/{tenant_id}/members", response_model=list[MemberResponse])
 async def list_members(
-    tenant_id: str,
-    principal: Principal = Depends(require_permission(Permission.TENANT_READ)),
+    tenant: Tenant = Depends(require_tenant_access(Permission.TENANT_READ)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ) -> list[MemberResponse]:
-    members = await TenantService(session).list_members(principal, tenant_id=tenant_id)
+    members = await TenantService(session).list_members(principal, tenant=tenant)
     return [MemberResponse.model_validate(m) for m in members]
 
 
 @router.post("/{tenant_id}/members", response_model=MemberResponse, status_code=201)
 async def add_member(
-    tenant_id: str,
     body: MemberCreateRequest,
-    principal: Principal = Depends(require_permission(Permission.TENANT_MANAGE)),
+    tenant: Tenant = Depends(require_tenant_access(Permission.TENANT_MANAGE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ) -> MemberResponse:
     user = await TenantService(session).add_member(
         principal,
-        tenant_id=tenant_id,
+        tenant=tenant,
         email=body.email,
         password=body.password,
         role=body.role,
@@ -66,13 +72,13 @@ async def add_member(
 
 @router.patch("/{tenant_id}/members/{user_id}", response_model=MemberResponse)
 async def change_member_role(
-    tenant_id: str,
     user_id: str,
     body: MemberRoleUpdateRequest,
-    principal: Principal = Depends(require_permission(Permission.TENANT_MANAGE)),
+    tenant: Tenant = Depends(require_tenant_access(Permission.TENANT_MANAGE)),
+    principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
 ) -> MemberResponse:
     user = await TenantService(session).change_member_role(
-        principal, tenant_id=tenant_id, user_id=user_id, role=body.role
+        principal, tenant=tenant, user_id=user_id, role=body.role
     )
     return MemberResponse.model_validate(user)

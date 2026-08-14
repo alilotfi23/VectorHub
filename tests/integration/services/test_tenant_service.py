@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
@@ -238,6 +238,114 @@ async def test_list_members_ordered_by_role_then_email(db: AsyncSession) -> None
     members = await TenantService(db).list_members(owner, tenant_id=owner.tenant_id)
     assert [m.role for m in members] == ["owner", "viewer", "viewer"]
     assert members[1].email < members[2].email
+
+
+async def test_member_ops_reuse_pre_resolved_tenant(db: AsyncSession) -> None:
+    """The route path hands a resolved Tenant into the service methods; each
+    behaves identically to the tenant_id-based path (same gates apply)."""
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+
+    tenant = await svc.resolve_tenant(owner, tenant_id=owner.tenant_id)
+    assert tenant.id == owner.tenant_id
+
+    member = await svc.add_member(
+        owner,
+        tenant=tenant,
+        email=_unique("v@example.com"),
+        password="password-123",
+        role="viewer",
+    )
+    assert member.tenant_id == owner.tenant_id
+
+    members = await svc.list_members(owner, tenant=tenant)
+    assert {m.id for m in members} == {owner.user_id, member.id}
+
+    updated = await svc.change_member_role(owner, tenant=tenant, user_id=member.id, role="editor")
+    assert updated.role == "editor"
+
+    # Gates still fire on the pre-resolved path: an editor cannot add members.
+    editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
+    with pytest.raises(AppError) as exc:
+        await svc.add_member(
+            editor,
+            tenant=tenant,
+            email=_unique("x@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+
+
+async def test_member_ops_require_exactly_one_of_tenant_id_or_tenant(
+    db: AsyncSession,
+) -> None:
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+    tenant = await svc.resolve_tenant(owner, tenant_id=owner.tenant_id)
+
+    # Neither: programming error, not a silent 404.
+    with pytest.raises(ValueError):
+        await svc.add_member(
+            owner, email=_unique("x@example.com"), password="password-123", role="viewer"
+        )
+    # Both: ambiguous, rejected.
+    with pytest.raises(ValueError):
+        await svc.add_member(
+            owner,
+            tenant_id=owner.tenant_id,
+            tenant=tenant,
+            email=_unique("y@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+    # Exactly one works.
+    await svc.add_member(
+        owner, tenant=tenant, email=_unique("z@example.com"), password="password-123", role="viewer"
+    )
+
+
+async def test_member_flow_resolves_tenant_once(db: AsyncSession) -> None:
+    """Route flow: the dependency resolves the tenant once, and the service
+    calls that follow reuse it — no second tenant lookup."""
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+
+    tenant_selects: list[str] = []
+
+    def _count(
+        conn: object,
+        cursor: object,
+        statement: object,
+        params: object,
+        context: object,
+        executemany: bool,
+    ) -> None:  # noqa: ANN001
+        sql = str(statement).strip().lower()
+        if sql.startswith("select") and "from tenants " in sql:
+            tenant_selects.append(sql)
+
+    bind = db.get_bind()
+    engine = getattr(bind, "sync_engine", bind)
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        # The dependency's resolution: exactly one tenants SELECT.
+        tenant = await svc.resolve_tenant(owner, tenant_id=owner.tenant_id)
+        assert len(tenant_selects) == 1
+
+        # The handler's service calls reuse that tenant: still one SELECT.
+        member = await svc.add_member(
+            owner,
+            tenant=tenant,
+            email=_unique("q@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+        await svc.list_members(owner, tenant=tenant)
+        await svc.change_member_role(owner, tenant=tenant, user_id=member.id, role="editor")
+        assert len(tenant_selects) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
 
 
 async def test_change_member_role(db: AsyncSession) -> None:

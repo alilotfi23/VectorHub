@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, has_permission
 from app.core.security import Principal, decode_access_token
+from app.db.models import Tenant
 from app.db.session import get_session
 from app.services.api_key_service import ApiKeyService
 from app.services.collection_service import CollectionAccess, CollectionService
+from app.services.tenant_service import TenantService
 
 API_KEY_HEADER = "X-API-Key"
 
@@ -84,5 +86,32 @@ def require_collection_permission(
         session: AsyncSession = Depends(get_session),
     ) -> CollectionAccess:
         return await CollectionService(session).check_access(principal, permission, name=name)
+
+    return checker
+
+
+def require_tenant_access(permission: Permission) -> Callable[..., Awaitable[Tenant]]:
+    """Dependency factory for tenant-scoped routes.
+
+    Resolves the tenant named in the path within the caller's access (a
+    missing OR foreign tenant raises TENANT_NOT_FOUND — no existence oracle)
+    and checks `permission` against the principal's tenant role. The resolved
+    Tenant is injected so route handlers and service methods share one
+    resolution per request instead of re-querying.
+    """
+
+    async def checker(
+        tenant_id: str,
+        principal: Principal = Depends(get_current_principal),
+        session: AsyncSession = Depends(get_session),
+    ) -> Tenant:
+        tenant = await TenantService(session).resolve_tenant(principal, tenant_id=tenant_id)
+        if not has_permission(principal, permission):
+            raise AppError(
+                ErrorCode.AUTH_INSUFFICIENT_SCOPE,
+                f"Requires permission: {permission.value}",
+                status_code=403,
+            )
+        return tenant
 
     return checker
