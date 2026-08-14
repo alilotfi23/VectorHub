@@ -240,3 +240,56 @@ def test_alertmanager_templates_referenced_and_defined() -> None:
     tmpl = TEMPLATES.read_text(encoding="utf-8")
     assert 'define "vhk.title"' in tmpl, "template must define vhk.title"
     assert 'define "vhk.text"' in tmpl, "template must define vhk.text"
+
+
+def test_alertmanager_inhibits_downstream_warnings_during_critical() -> None:
+    """While VhkCriticalDependencyDown fires, the symptom warnings (error
+    spikes, 429 floods, stale workers, latency) must be inhibited so one
+    incident pages once. Vector-backend alerts are deliberately NOT inhibited
+    — backends are physically independent of the control plane. The coverage
+    check is airtight: every emitted warning is either inhibited or named as
+    an independent backend rule, so a new warning rule forces a decision."""
+    am = _load_alertmanager()
+    inhibits = am.get("inhibit_rules")
+    assert inhibits, "alertmanager.yml must define inhibit_rules"
+
+    inhibited: set[str] = set()
+    for rule in inhibits:
+        src = rule["source_matchers"]
+        assert 'alertname="VhkCriticalDependencyDown"' in src, (
+            "inhibit source must be the critical dependency alert"
+        )
+        assert 'severity="critical"' in src, "inhibit source must be severity=critical"
+        assert "equal" not in rule, "no equal labels: the platform is one instance"
+        for matcher in rule["target_matchers"]:
+            assert matcher.startswith('severity="warning"') or matcher.startswith("alertname"), (
+                f"unexpected target matcher: {matcher}"
+            )
+            if matcher.startswith("alertname=~"):
+                inner = re.findall(r"Vhk\(([^)]+)\)", matcher)
+                assert inner, f"could not parse alertname regex: {matcher}"
+                inhibited |= {f"Vhk{name}" for name in inner[0].split("|")}
+            elif matcher.startswith("alertname="):
+                inhibited.add(matcher.split("=", 1)[1].strip('"'))
+
+    emitted_warnings = {
+        rule["alert"] for rule in _load_alerts() if rule["labels"]["severity"] == "warning"
+    }
+    assert inhibited <= emitted_warnings, (
+        f"inhibit targets unknown alerts: {sorted(inhibited - emitted_warnings)}"
+    )
+    symptom = {
+        "VhkErrorRateSpike",
+        "VhkRateLimitFlood",
+        "VhkWorkerHeartbeatStale",
+        "VhkHighP99Latency",
+    }
+    assert symptom <= inhibited, f"symptom rules must be inhibited: {sorted(symptom - inhibited)}"
+    independent = {"VhkBackendDown", "VhkBackendFlapping"}
+    assert independent.isdisjoint(inhibited), (
+        f"backend rules must stay live, got inhibited: {sorted(independent & inhibited)}"
+    )
+    assert emitted_warnings == inhibited | independent, (
+        f"every warning must be inhibited or independent; uncovered: "
+        f"{sorted(emitted_warnings - inhibited - independent)}"
+    )

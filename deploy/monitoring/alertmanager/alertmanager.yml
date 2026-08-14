@@ -49,3 +49,23 @@ receivers:
 
 templates:
   - /etc/alertmanager/templates/*.tmpl
+
+# Inhibition: a control-plane outage (Postgres/Redis down) makes everything
+# downstream look sick — error-rate spikes, worker heartbeats, latency — and
+# would page six times for one incident. While VhkCriticalDependencyDown
+# fires, suppress those symptom alerts so the pager sees the root cause once.
+# Vector-backend alerts (VhkBackendDown, VhkBackendFlapping) are deliberately
+# NOT inhibited: backends are physically independent of the control plane, so
+# a real backend outage must still page during a control-plane incident.
+# Inhibition applies only while the source fires; suppressed alerts re-notify
+# after recovery (repeat_interval), so nothing is permanently hidden.
+inhibit_rules:
+  - source_matchers:
+      - 'alertname="VhkCriticalDependencyDown"'
+      - 'severity="critical"'
+    # No `equal`: the platform is a single logical instance (one /health per
+    # process), so the outage is global — there is no namespace/instance
+    # dimension to scope inhibition by.
+    target_matchers:
+      - 'severity="warning"'
+      - 'alertname=~"Vhk(ErrorRateSpike|RateLimitFlood|WorkerHeartbeatStale|HighP99Latency)"'

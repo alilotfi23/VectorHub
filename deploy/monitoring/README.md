@@ -8,7 +8,7 @@ Alert rules and a Grafana dashboard for the metrics exposed by
 | Path | Purpose |
 | --- | --- |
 | `prometheus/alerts.yml` | Prometheus alert rules for the `vhk_*` + `http_*` metric families |
-| `alertmanager/alertmanager.yml` | Alertmanager routing: `critical` → pager (PagerDuty), `warning`/default → Slack, env-driven credentials |
+| `alertmanager/alertmanager.yml` | Alertmanager routing: `critical` → pager (PagerDuty), `warning`/default → Slack, env-driven credentials; inhibition of downstream symptom warnings while the control plane is down |
 | `alertmanager/templates/vhk.tmpl` | Notification title/text templates referenced by the Alertmanager config |
 | `grafana/dashboards/platform.json` | Dashboard: request rate by status, error rate, latency percentiles, per-dependency health failures, rate-limit rejections, 429 rate, response size, per-route latency |
 
@@ -41,6 +41,15 @@ environment:
   SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
   PAGERDUTY_ROUTING_KEY: "..."
 ```
+
+The same config also **inhibits** the noisy symptom warnings while a
+control-plane outage is firing: while `VhkCriticalDependencyDown` is active,
+the downstream alerts it causes (5xx spike, 429 flood, stale worker heartbeat,
+high latency) are suppressed so one incident pages once. Vector-backend alerts
+(`VhkBackendDown`, `VhkBackendFlapping`) are deliberately **not** inhibited —
+backends are physically independent of the control plane, so a real backend
+outage still pages even during a Postgres/Redis incident. Inhibition lasts
+only as long as the source fires; suppressed alerts re-notify after recovery.
 
 Prometheus must be told to forward:
 
@@ -95,3 +104,4 @@ select `All` to decompose the global latency panel per route.
 | `VhkBackendDown` | any adapter probe failure, `for: 5m` | Degrades but never fails the probe (no restart loop) |
 | `VhkBackendFlapping` | two down episodes with a clean healthy gap in 30m | Crash/restart loop vs. a clean single outage — see the rule comment for the counter-only detection semantics |
 | `VhkHighP99Latency` | p99 > 2s, `for: 10m` | Sustained p99 over 2s on a vector API is a backend or index problem |
+| Inhibition | `VhkCriticalDependencyDown` suppresses error-spike / 429-flood / stale-worker / high-latency warnings | One incident, one page — the pager sees the root cause, not its symptoms; backend alerts stay live since backends are independent of the control plane |
