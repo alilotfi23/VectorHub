@@ -3,10 +3,24 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+
+class StrictRequest(BaseModel):
+    """Request envelope base: unknown fields are rejected (extra="forbid").
+
+    The isolation contract (design doc R3/E3) requires that a forged
+    tenant_id/user_id/owner field in a request body is loudly rejected with
+    422 — never silently dropped. Every request body extends this; response
+    models deliberately do not (they may gain fields without breaking
+    clients).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # --- Auth ---
 
 
-class RegisterRequest(BaseModel):
+class RegisterRequest(StrictRequest):
     email: EmailStr = Field(min_length=3, max_length=255, examples=["alice@example.com"])
     password: str = Field(min_length=8, max_length=128, description="Minimum 8 characters")
     tenant_name: str = Field(
@@ -14,16 +28,16 @@ class RegisterRequest(BaseModel):
     )
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(StrictRequest):
     email: EmailStr = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1)
 
 
-class RefreshRequest(BaseModel):
+class RefreshRequest(StrictRequest):
     refresh_token: str = Field(min_length=1)
 
 
-class LogoutRequest(BaseModel):
+class LogoutRequest(StrictRequest):
     refresh_token: str = Field(min_length=1)
 
 
@@ -61,7 +75,7 @@ class MeResponse(BaseModel):
 # --- Tenants ---
 
 
-class TenantCreateRequest(BaseModel):
+class TenantCreateRequest(StrictRequest):
     name: str = Field(min_length=1, max_length=255)
 
 
@@ -79,7 +93,7 @@ class TenantResponse(BaseModel):
 ApiKeyRole = Literal["owner", "admin", "editor", "viewer"]
 
 
-class ApiKeyCreateRequest(BaseModel):
+class ApiKeyCreateRequest(StrictRequest):
     name: str = Field(min_length=1, max_length=255)
     role: ApiKeyRole = "editor"  # least-privilege default
     expires_at: datetime | None = None
@@ -112,7 +126,7 @@ class ApiKeyCreatedResponse(ApiKeyResponse):
 MemberRole = Literal["owner", "admin", "editor", "viewer"]
 
 
-class MemberCreateRequest(BaseModel):
+class MemberCreateRequest(StrictRequest):
     email: EmailStr = Field(min_length=3, max_length=255)
     password: str = Field(
         min_length=8, max_length=128, description="Initial password set by the inviting admin"
@@ -120,7 +134,7 @@ class MemberCreateRequest(BaseModel):
     role: MemberRole = "viewer"  # least-privilege default
 
 
-class MemberRoleUpdateRequest(BaseModel):
+class MemberRoleUpdateRequest(StrictRequest):
     role: MemberRole
 
 

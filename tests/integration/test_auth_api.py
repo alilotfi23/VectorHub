@@ -346,3 +346,96 @@ async def test_platform_admin_can_create_tenant(
     )
     assert resp.status_code == 201
     assert resp.json()["name"].startswith("provisioned-")
+
+
+async def test_forged_tenant_fields_rejected_everywhere(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Every request-body endpoint rejects a forged tenant_id at the schema
+    (422) — the wire-level half of the isolation contract; the schema-level
+    half is tests/unit/test_schemas.py."""
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    owner_id = reg["user"]["id"]
+    tenant_id = reg["user"]["tenant_id"]
+    forged = {"tenant_id": "other-tenant"}
+
+    # Seed a collection so the permissions PATCH's dependency resolves and
+    # the body validation (the point under test) is what fires.
+    from app.db.models import Collection
+
+    async with session_factory() as session:
+        session.add(
+            Collection(
+                tenant_id=tenant_id,
+                name="products",
+                backend="chroma",
+                dimension=8,
+                distance_metric="cosine",
+                physical_name=f"col_{uuid.uuid4().hex[:12]}",
+            )
+        )
+        await session.commit()
+
+    cases = [
+        (
+            "POST",
+            f"{API}/auth/register",
+            {
+                "email": _unique_email("f"),
+                "password": "password-123",
+                "tenant_name": _unique("t"),
+                **forged,
+            },
+            None,
+        ),
+        (
+            "POST",
+            f"{API}/auth/login",
+            {"email": reg["user"]["email"], "password": "password-123", **forged},
+            None,
+        ),
+        ("POST", f"{API}/auth/refresh", {"refresh_token": "tok", **forged}, None),
+        (
+            "POST",
+            f"{API}/tenants/{tenant_id}/members",
+            {"email": _unique_email("m"), "password": "password-123", **forged},
+            headers,
+        ),
+        (
+            "PATCH",
+            f"{API}/tenants/{tenant_id}/members/{owner_id}",
+            {"role": "viewer", **forged},
+            headers,
+        ),
+        ("POST", f"{API}/api-keys", {"name": "x", **forged}, headers),
+        (
+            "PATCH",
+            f"{API}/collections/products/permissions",
+            {"user_id": owner_id, "role": "viewer", **forged},
+            headers,
+        ),
+    ]
+    for method, path, body, hdrs in cases:
+        resp = await client.request(method, path, json=body, headers=hdrs)
+        assert resp.status_code == 422, f"{method} {path}: {resp.status_code} {resp.text}"
+
+
+async def test_tenant_create_rejects_forged_fields(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin_email = _unique_email("platform-admin")
+    monkeypatch.setenv("BOOTSTRAP_PLATFORM_ADMIN_EMAILS", admin_email)
+    get_settings.cache_clear()
+    try:
+        reg = await _register(client, email=admin_email)
+    finally:
+        get_settings.cache_clear()
+    assert reg["user"]["is_platform_admin"] is True
+
+    resp = await client.post(
+        f"{API}/tenants",
+        json={"name": _unique("t"), "tenant_id": "other-tenant"},
+        headers=_auth_headers(reg["access_token"]),
+    )
+    assert resp.status_code == 422, resp.text
