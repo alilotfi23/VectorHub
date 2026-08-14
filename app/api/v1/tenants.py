@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -13,6 +13,7 @@ from app.db.models import Tenant
 from app.db.session import get_session
 from app.schemas.auth import (
     MemberCreateRequest,
+    MemberListResponse,
     MemberResponse,
     MemberRoleUpdateRequest,
     TenantCreateRequest,
@@ -43,14 +44,24 @@ async def get_tenant(
     return TenantResponse.model_validate(tenant)
 
 
-@router.get("/{tenant_id}/members", response_model=list[MemberResponse])
+@router.get("/{tenant_id}/members", response_model=MemberListResponse)
 async def list_members(
+    limit: int = Query(default=50, ge=1, le=200, description="Page size"),
+    cursor: str | None = Query(
+        default=None, description="Opaque keyset cursor from a previous page"
+    ),
     tenant: Tenant = Depends(require_tenant_access(Permission.TENANT_READ)),
     principal: Principal = Depends(get_current_principal),
     session: AsyncSession = Depends(get_session),
-) -> list[MemberResponse]:
-    members = await TenantService(session).list_members(principal, tenant=tenant)
-    return [MemberResponse.model_validate(m) for m in members]
+) -> MemberListResponse:
+    page = await TenantService(session).list_members(
+        principal, tenant=tenant, limit=limit, cursor=cursor
+    )
+    return MemberListResponse(
+        items=[MemberResponse.model_validate(m) for m in page.items],
+        next_cursor=page.next_cursor,
+        total=page.total,
+    )
 
 
 @router.post("/{tenant_id}/members", response_model=MemberResponse, status_code=201)

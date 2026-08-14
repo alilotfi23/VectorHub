@@ -6,6 +6,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.pagination import Page
 from app.core.security import Principal, hash_password
 from app.db.models import AuditLog, User
 from app.services.auth_service import AuthService
@@ -194,9 +195,10 @@ async def test_list_members(db: AsyncSession) -> None:
         password="password-123",
         role="viewer",
     )
-    members = await svc.list_members(owner, tenant_id=owner.tenant_id)
-    assert {m.role for m in members} == {"owner", "editor", "viewer"}
-    assert len(members) == 3
+    page = await svc.list_members(owner, tenant_id=owner.tenant_id)
+    assert {m.role for m in page.items} == {"owner", "editor", "viewer"}
+    assert page.total == 3
+    assert page.next_cursor is None  # all members fit on one page
 
 
 async def test_list_members_cross_tenant_hidden(db: AsyncSession) -> None:
@@ -235,9 +237,9 @@ async def test_list_members_ordered_by_role_then_email(db: AsyncSession) -> None
     )
     await db.commit()
 
-    members = await TenantService(db).list_members(owner, tenant_id=owner.tenant_id)
-    assert [m.role for m in members] == ["owner", "viewer", "viewer"]
-    assert members[1].email < members[2].email
+    page = await TenantService(db).list_members(owner, tenant_id=owner.tenant_id)
+    assert [m.role for m in page.items] == ["owner", "viewer", "viewer"]
+    assert page.items[1].email < page.items[2].email
 
 
 async def test_member_ops_reuse_pre_resolved_tenant(db: AsyncSession) -> None:
@@ -258,8 +260,8 @@ async def test_member_ops_reuse_pre_resolved_tenant(db: AsyncSession) -> None:
     )
     assert member.tenant_id == owner.tenant_id
 
-    members = await svc.list_members(owner, tenant=tenant)
-    assert {m.id for m in members} == {owner.user_id, member.id}
+    page = await svc.list_members(owner, tenant=tenant)
+    assert {m.id for m in page.items} == {owner.user_id, member.id}
 
     updated = await svc.change_member_role(owner, tenant=tenant, user_id=member.id, role="editor")
     assert updated.role == "editor"
@@ -346,6 +348,43 @@ async def test_member_flow_resolves_tenant_once(db: AsyncSession) -> None:
         assert len(tenant_selects) == 1
     finally:
         event.remove(engine, "before_cursor_execute", _count)
+
+
+async def test_list_members_paginates_with_cursor(db: AsyncSession) -> None:
+    """Walking the cursor returns every member exactly once, rank-ordered,
+    with a stable total."""
+    _, owner = await _register(db, "org")
+    svc = TenantService(db)
+    member_ids: dict[str, str] = {}
+    for tag in ("e1", "v1", "v2", "v3"):
+        member = await svc.add_member(
+            owner,
+            tenant_id=owner.tenant_id,
+            email=_unique(f"{tag}@example.com"),
+            password="password-123",
+            role="viewer",
+        )
+        member_ids[tag] = member.id
+    await svc.change_member_role(
+        owner, tenant_id=owner.tenant_id, user_id=member_ids["e1"], role="editor"
+    )
+
+    pages: list[Page[User]] = []
+    cursor: str | None = None
+    for _ in range(5):
+        page = await svc.list_members(owner, tenant_id=owner.tenant_id, limit=2, cursor=cursor)
+        pages.append(page)
+        assert page.total == 5  # owner + editor + 3 viewers
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+
+    assert [m.role for m in pages[0].items] == ["owner", "editor"]
+    assert [m.role for m in pages[1].items] == ["viewer", "viewer"]
+    assert [m.role for m in pages[2].items] == ["viewer"]
+    assert len(pages) == 3
+    all_emails = [m.email for page in pages for m in page.items]
+    assert len(all_emails) == 5 and len(set(all_emails)) == 5  # no overlap, no gap
 
 
 async def test_change_member_role(db: AsyncSession) -> None:

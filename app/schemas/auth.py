@@ -145,3 +145,12 @@ class MemberResponse(BaseModel):
     email: str
     role: str
     created_at: datetime
+
+
+class MemberListResponse(BaseModel):
+    """Cursor-paginated member directory: `items` plus an opaque
+    `next_cursor` (None on the last page) and the total member count."""
+
+    items: list[MemberResponse]
+    next_cursor: str | None
+    total: int

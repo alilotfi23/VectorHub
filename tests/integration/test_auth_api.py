@@ -255,9 +255,12 @@ async def test_member_management_flow(client: AsyncClient) -> None:
 
     listed = await client.get(f"{API}/tenants/{tenant_id}/members", headers=headers)
     assert listed.status_code == 200
-    assert {m["role"] for m in listed.json()} == {"owner", "editor"}
+    body = listed.json()
+    assert {m["role"] for m in body["items"]} == {"owner", "editor"}
+    assert body["total"] == 2
+    assert body["next_cursor"] is None
     # Rank-ordered: the owner lists before the provisioned editor.
-    assert [m["role"] for m in listed.json()] == ["owner", "editor"]
+    assert [m["role"] for m in body["items"]] == ["owner", "editor"]
 
     # The provisioned member can log in and read the tenant.
     member_login = await client.post(
@@ -453,3 +456,56 @@ async def test_tenant_create_rejects_forged_fields(
         headers=_auth_headers(reg["access_token"]),
     )
     assert resp.status_code == 422, resp.text
+
+
+async def test_member_list_pagination_over_api(client: AsyncClient) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    tenant_id = reg["user"]["tenant_id"]
+
+    member_ids: dict[str, str] = {}
+    for tag in ("e1", "v1", "v2"):
+        created = await client.post(
+            f"{API}/tenants/{tenant_id}/members",
+            json={"email": _unique_email(f"pg-{tag}"), "password": "password-123"},
+            headers=headers,
+        )
+        assert created.status_code == 201
+        member_ids[tag] = created.json()["id"]
+    await client.patch(
+        f"{API}/tenants/{tenant_id}/members/{member_ids['e1']}",
+        json={"role": "editor"},
+        headers=headers,
+    )
+
+    collected: list[tuple[str, str]] = []
+    cursor: str | None = None
+    pages = 0
+    for _ in range(5):
+        params: dict[str, str] = {"limit": "2"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        resp = await client.get(
+            f"{API}/tenants/{tenant_id}/members", params=params, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 4  # owner + 3 members
+        collected.extend((m["role"], m["email"]) for m in body["items"])
+        pages += 1
+        if body["next_cursor"] is None:
+            break
+        cursor = body["next_cursor"]
+
+    assert pages == 2  # 4 members, limit 2
+    # Rank-ordered (owner then editor then viewers); the two viewers tie on
+    # role, so email decides within the page — the no-overlap check proves
+    # every member appears exactly once.
+    assert [r for r, _ in collected] == ["owner", "editor", "viewer", "viewer"]
+    assert len({email for _, email in collected}) == 4
+
+    bad = await client.get(
+        f"{API}/tenants/{tenant_id}/members", params={"cursor": "garbage"}, headers=headers
+    )
+    assert bad.status_code == 422
+    assert bad.json()["error_code"] == "VALIDATION_INVALID_CURSOR"

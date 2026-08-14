@@ -16,12 +16,13 @@ service methods, which never re-resolve; direct service callers pass
 scoping (no existence oracle).
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.rbac import Permission, has_permission, role_rank
+from app.core.pagination import Page, paginate
+from app.core.rbac import VALID_ROLES, Permission, has_permission, role_rank
 from app.core.security import Principal, hash_password
 from app.db.models import Tenant, User
 from app.services.audit_service import AuditService
@@ -92,15 +93,36 @@ class TenantService:
         self,
         actor: Principal,
         *,
+        limit: int = 50,
+        cursor: str | None = None,
         tenant_id: str | None = None,
         tenant: Tenant | None = None,
-    ) -> list[User]:
+    ) -> Page[User]:
+        """List a tenant's members, cursor-paginated so large directories are
+        never fully materialized.
+
+        Tenant-scoped (no existence oracle). Keyset pagination over the
+        deterministic sort — role rank descending (owners first), then email.
+        The rank CASE is derived from the canonical role_rank mapping;
+        created_at is a Python-side default that can tie within a batch, so
+        it must not be part of the sort key; email is unique, so the key is
+        total. Generic machinery in app.core.pagination.
+        """
         tenant = await self._tenant_for(actor, tenant_id=tenant_id, tenant=tenant)
-        rows = await self._session.scalars(select(User).where(User.tenant_id == tenant.id))
-        # Deterministic order: role rank descending (owners first), then email.
-        # created_at is a Python-side default that can tie within a batch, so
-        # it must not be the sort key; email is unique, so the key is total.
-        return sorted(rows, key=lambda u: (-role_rank(u.role), u.email))
+        rank_case = case(
+            {role: role_rank(role) for role in VALID_ROLES},
+            value=User.role,
+            else_=0,  # role_rank's default for unknown roles
+        )
+        return await paginate(
+            session=self._session,
+            base=select(User).where(User.tenant_id == tenant.id),
+            count=select(func.count()).select_from(User).where(User.tenant_id == tenant.id),
+            sort_keys=[(rank_case, "desc"), (User.email, "asc")],
+            limit=limit,
+            cursor=cursor,
+            row_key_values=lambda u: [role_rank(u.role), u.email],
+        )
 
     async def add_member(
         self,

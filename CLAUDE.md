@@ -98,7 +98,7 @@ GET    /api/v1/capabilities                     # backend feature matrix
 
 POST   /api/v1/tenants                          # platform-admin only
 GET    /api/v1/tenants/{id}
-GET    /api/v1/tenants/{id}/members              # tenant directory (viewer+)
+GET    /api/v1/tenants/{id}/members              # tenant directory, cursor-paginated (viewer+; `limit` 1-200, default 50, opaque `cursor`)
 POST   /api/v1/tenants/{id}/members              # provision a member account (admin/owner; initial password set by inviter)
 PATCH  /api/v1/tenants/{id}/members/{user_id}    # change a member's role (admin/owner; last owner cannot be demoted)
 
