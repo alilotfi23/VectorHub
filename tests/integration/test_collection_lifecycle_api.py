@@ -110,11 +110,12 @@ async def test_collection_duplicate_name_409(client: AsyncClient) -> None:
 
 
 async def test_collection_unregistered_backend_503(client: AsyncClient) -> None:
-    """A schema-valid backend that isn't registered (Qdrant lands in Phase 4)
-    is 503 COLLECTION_BACKEND_UNAVAILABLE, not a silent fallback."""
+    """A schema-valid backend that isn't registered (Milvus lands in Phase 5;
+    qdrant/weaviate are built-ins as of Phase 4) is 503
+    COLLECTION_BACKEND_UNAVAILABLE, not a silent fallback."""
     reg = await _register(client)
     headers = _auth_headers(reg["access_token"])
-    resp = await _create(client, headers, "qdrant-coll", backend="qdrant")
+    resp = await _create(client, headers, "milvus-coll", backend="milvus")
     assert resp.status_code == 503
     assert resp.json()["error_code"] == "COLLECTION_BACKEND_UNAVAILABLE"
 

@@ -18,6 +18,8 @@ from app.core.cache import close_redis
 from app.core.config import get_settings
 
 CHROMA_IMAGE = "chromadb/chroma:1.5.9"  # pinned to the installed client version
+QDRANT_IMAGE = "qdrant/qdrant:v1.19.0"  # matches qdrant-client 1.19.0
+WEAVIATE_IMAGE = "semitechnologies/weaviate:1.28.4"  # matches weaviate-client 4.23.0
 
 MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
 APP_ROLE_PASSWORD = "app_test_password"
@@ -146,6 +148,71 @@ async def chroma_backend(chroma_url: str) -> AsyncGenerator[None, None]:
     registry.register("chroma", ChromaAdapter, url=chroma_url)
     yield
     registry.register("chroma", ChromaAdapter)
+
+
+@pytest.fixture(scope="session")
+async def qdrant_url() -> AsyncGenerator[str, None]:
+    """Qdrant server testcontainer (image pinned to the installed client)."""
+    with DockerContainer(QDRANT_IMAGE).with_exposed_ports(6333) as container:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(6333)}"
+        import httpx
+
+        for _ in range(60):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{url}/readyz", timeout=2)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        else:
+            raise RuntimeError("Qdrant testcontainer did not become ready in time")
+        yield url
+
+
+@pytest.fixture(scope="session")
+async def qdrant_backend(qdrant_url: str) -> AsyncGenerator[None, None]:
+    from app.adapters.qdrant_adapter import QdrantAdapter
+    from app.adapters.registry import registry
+
+    registry.register("qdrant", QdrantAdapter, url=qdrant_url)
+    yield
+    registry.register("qdrant", QdrantAdapter)
+
+
+@pytest.fixture(scope="session")
+async def weaviate_url() -> AsyncGenerator[tuple[str, int], None]:
+    """Weaviate server testcontainer; yields (http_url, grpc_port) — the
+    adapter needs both (the gRPC channel is the query transport)."""
+    with DockerContainer(WEAVIATE_IMAGE).with_exposed_ports(8080, 50051) as container:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(8080)}"
+        grpc_port = container.get_exposed_port(50051)
+        import httpx
+
+        for _ in range(90):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{url}/v1/.well-known/ready", timeout=2)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        else:
+            raise RuntimeError("Weaviate testcontainer did not become ready in time")
+        yield url, grpc_port
+
+
+@pytest.fixture(scope="session")
+async def weaviate_backend(weaviate_url: tuple[str, int]) -> AsyncGenerator[None, None]:
+    from app.adapters.registry import registry
+    from app.adapters.weaviate_adapter import WeaviateAdapter
+
+    url, grpc_port = weaviate_url
+    registry.register("weaviate", WeaviateAdapter, url=url, grpc_port=grpc_port)
+    yield
+    registry.register("weaviate", WeaviateAdapter)
 
 
 @pytest.fixture

@@ -31,14 +31,21 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
     async def override_get_session() -> Any:
         yield _BrokenSession()
 
-    # Point the built-in chroma adapter at a guaranteed-dead port so the probe
-    # is deterministic regardless of what earlier suites in the process left
-    # registered (the integration layer's session-scoped chroma container can
-    # still be running here, which would otherwise report "ok").
+    # Point every built-in adapter at a guaranteed-dead port so the probe is
+    # deterministic regardless of what earlier suites in the process left
+    # registered (the integration layer's session-scoped containers can still
+    # be running here, which would otherwise report "ok").
     from app.adapters.chroma_adapter import ChromaAdapter
+    from app.adapters.qdrant_adapter import QdrantAdapter
     from app.adapters.registry import registry
+    from app.adapters.weaviate_adapter import WeaviateAdapter
 
-    registry.register("chroma", ChromaAdapter, url="http://127.0.0.1:1")
+    for name, cls in (
+        ("chroma", ChromaAdapter),
+        ("qdrant", QdrantAdapter),
+        ("weaviate", WeaviateAdapter),
+    ):
+        registry.register(name, cls, url="http://127.0.0.1:1")
     monkeypatch.setattr(health_service, "get_redis", lambda: None)
     admin_app.dependency_overrides[get_session] = override_get_session
     try:
@@ -46,16 +53,18 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
     finally:
         admin_app.dependency_overrides.clear()
         registry.register("chroma", ChromaAdapter)
+        registry.register("qdrant", QdrantAdapter)
+        registry.register("weaviate", WeaviateAdapter)
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "down"
     assert body["checks"]["postgres"] == "down"
     assert body["checks"]["redis"] == "down"
     assert body["checks"]["workers"] == "down"
-    # The chroma built-in registers at import (settings default URL, no server
-    # running here) — its probe reports down, exactly as a deployment without
-    # chroma would.
-    assert body["checks"]["adapters"] == {"chroma": "down"}
+    # All three built-ins register at import (settings default URL, no server
+    # reachable here) — each probe reports down, exactly as a deployment
+    # without the backends would.
+    assert body["checks"]["adapters"] == {"chroma": "down", "qdrant": "down", "weaviate": "down"}
 
 
 async def test_health_probe_emits_structured_log(monkeypatch: pytest.MonkeyPatch) -> None:

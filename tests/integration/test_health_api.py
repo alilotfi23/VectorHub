@@ -10,7 +10,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.adapters.qdrant_adapter import QdrantAdapter
 from app.adapters.registry import registry
+from app.adapters.weaviate_adapter import WeaviateAdapter
 from app.admin import app as admin_app
 from app.core.cache import get_redis
 from app.core.config import get_settings
@@ -36,11 +38,19 @@ async def client(
         async with session_factory() as session:
             yield session
 
+    # Point the qdrant/weaviate built-ins at guaranteed-dead URLs so the
+    # adapters map is deterministic here (the integration layer may or may not
+    # have their session-scoped containers running, and the machine may have
+    # local dev servers on the default ports).
+    registry.register("qdrant", QdrantAdapter, url="http://127.0.0.1:1")
+    registry.register("weaviate", WeaviateAdapter, url="http://127.0.0.1:1")
     admin_app.dependency_overrides[get_session] = override_get_session
     transport = ASGITransport(app=admin_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     admin_app.dependency_overrides.clear()
+    registry.register("qdrant", QdrantAdapter)
+    registry.register("weaviate", WeaviateAdapter)
 
 
 async def _write_heartbeat(*, ts: float | None = None) -> None:
@@ -63,8 +73,11 @@ async def _clear_heartbeats() -> None:
 async def test_health_ok_all_dependencies(
     client: AsyncClient, redis_url: str, chroma_backend: None
 ) -> None:
-    """Happy path: Postgres + Redis up, a live worker heartbeat, chroma
-    registered and healthy -> 200 'ok'."""
+    """Control plane healthy (Postgres + Redis up, live worker heartbeat,
+    chroma registered and healthy) with the qdrant/weaviate built-ins pointed
+    at dead URLs -> 200 'degraded': a non-critical backend outage must not
+    fail the probe (the spec's degraded contract), and the adapters map
+    carries per-backend detail."""
     await _write_heartbeat()
     try:
         resp = await client.get("/health")
@@ -72,11 +85,11 @@ async def test_health_ok_all_dependencies(
         await _clear_heartbeats()
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "degraded"
     assert body["checks"]["postgres"] == "ok"
     assert body["checks"]["redis"] == "ok"
     assert body["checks"]["workers"] == "ok"
-    assert body["checks"]["adapters"] == {"chroma": "ok"}
+    assert body["checks"]["adapters"] == {"chroma": "ok", "qdrant": "down", "weaviate": "down"}
 
 
 async def test_worker_heartbeat_writer_feeds_workers_check(
@@ -96,7 +109,9 @@ async def test_worker_heartbeat_writer_feeds_workers_check(
         await _clear_heartbeats()
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "ok"
+    # degraded, not ok: the fixture points qdrant/weaviate at dead URLs; the
+    # point here is the workers check going green via the real writer.
+    assert body["status"] == "degraded"
     assert body["checks"]["workers"] == "ok"
 
 
@@ -144,7 +159,13 @@ async def test_health_reports_adapter_status(
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["adapters"] == {"broken": "down", "chroma": "ok", "good": "ok"}
+    assert body["checks"]["adapters"] == {
+        "broken": "down",
+        "chroma": "ok",
+        "good": "ok",
+        "qdrant": "down",
+        "weaviate": "down",
+    }
 
 
 async def test_health_down_when_postgres_unreachable(client: AsyncClient) -> None:

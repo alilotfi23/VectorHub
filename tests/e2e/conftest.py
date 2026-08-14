@@ -19,8 +19,12 @@ from tests.integration.conftest import (  # noqa: F401
     chroma_url,
     db,
     db_url,
+    qdrant_backend,
+    qdrant_url,
     redis_url,
     session_factory,
+    weaviate_backend,
+    weaviate_url,
 )
 
 
@@ -28,7 +32,9 @@ from tests.integration.conftest import (  # noqa: F401
 async def client(
     session_factory: async_sessionmaker[AsyncSession],  # noqa: F811 — pytest fixture name, shadows the conftest re-export
     redis_url: str,  # noqa: F811 — cache-on for the e2e layer (the production path)
-    chroma_backend: None,  # noqa: F811 — Layer 3 exercises the real platform against a real vector backend; the e2e layer must never depend on an earlier integration suite having registered the container
+    chroma_backend: None,  # noqa: F811 — Layer 3 runs the real platform against real vector backends; the e2e layer must never depend on an earlier integration suite having registered the containers
+    qdrant_backend: None,  # noqa: F811
+    weaviate_backend: None,  # noqa: F811
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
