@@ -1,11 +1,16 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
 from app.core.rbac import Permission
 from app.core.security import Principal
 from app.db.session import get_session
-from app.schemas.auth import ApiKeyCreatedResponse, ApiKeyCreateRequest, ApiKeyResponse
+from app.schemas.auth import (
+    ApiKeyCreatedResponse,
+    ApiKeyCreateRequest,
+    ApiKeyListResponse,
+    ApiKeyResponse,
+)
 from app.services.api_key_service import ApiKeyService
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
@@ -31,13 +36,21 @@ async def create_key(
     return ApiKeyCreatedResponse(**base.model_dump(), key=plaintext)
 
 
-@router.get("", response_model=list[ApiKeyResponse])
+@router.get("", response_model=ApiKeyListResponse)
 async def list_keys(
+    limit: int = Query(default=50, ge=1, le=200, description="Page size"),
+    cursor: str | None = Query(
+        default=None, description="Opaque keyset cursor from a previous page"
+    ),
     principal: Principal = Depends(require_permission(Permission.TENANT_MANAGE)),
     session: AsyncSession = Depends(get_session),
-) -> list[ApiKeyResponse]:
-    keys = await ApiKeyService(session).list_keys(principal)
-    return [ApiKeyResponse.model_validate(k) for k in keys]
+) -> ApiKeyListResponse:
+    page = await ApiKeyService(session).list_keys(principal, limit=limit, cursor=cursor)
+    return ApiKeyListResponse(
+        items=[ApiKeyResponse.model_validate(k) for k in page.items],
+        next_cursor=page.next_cursor,
+        total=page.total,
+    )
 
 
 @router.delete("/{key_id}", status_code=204)

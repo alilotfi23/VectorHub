@@ -165,8 +165,11 @@ async def test_api_key_lifecycle_over_api(client: AsyncClient) -> None:
 
     listed = await client.get(f"{API}/api-keys", headers=headers)
     assert listed.status_code == 200
-    assert [k["name"] for k in listed.json()] == ["ci-robot"]
-    assert "key" not in listed.json()[0]  # plaintext is never retrievable again
+    listed_body = listed.json()
+    assert [k["name"] for k in listed_body["items"]] == ["ci-robot"]
+    assert listed_body["total"] == 1
+    assert listed_body["next_cursor"] is None
+    assert "key" not in listed_body["items"][0]  # plaintext is never retrievable again
 
     # Key authenticates for tenant reads (editor -> tenant:read).
     tenant_id = reg["user"]["tenant_id"]
@@ -507,5 +510,37 @@ async def test_member_list_pagination_over_api(client: AsyncClient) -> None:
     bad = await client.get(
         f"{API}/tenants/{tenant_id}/members", params={"cursor": "garbage"}, headers=headers
     )
+    assert bad.status_code == 422
+    assert bad.json()["error_code"] == "VALIDATION_INVALID_CURSOR"
+
+
+async def test_api_key_list_pagination_over_api(client: AsyncClient) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    for i in range(3):
+        created = await client.post(f"{API}/api-keys", json={"name": f"k-{i}"}, headers=headers)
+        assert created.status_code == 201
+
+    collected: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    for _ in range(5):
+        params: dict[str, str] = {"limit": "2"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        resp = await client.get(f"{API}/api-keys", params=params, headers=headers)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 3
+        collected.extend(k["name"] for k in body["items"])
+        pages += 1
+        if body["next_cursor"] is None:
+            break
+        cursor = body["next_cursor"]
+
+    assert pages == 2  # 3 keys, limit 2 -> 2 + 1
+    assert collected == ["k-2", "k-1", "k-0"]  # newest first
+
+    bad = await client.get(f"{API}/api-keys", params={"cursor": "garbage"}, headers=headers)
     assert bad.status_code == 422
     assert bad.json()["error_code"] == "VALIDATION_INVALID_CURSOR"

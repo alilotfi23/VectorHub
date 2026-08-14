@@ -8,10 +8,11 @@ are stored but enforced in Phase 6.
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import BigInteger, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.pagination import Page, paginate
 from app.core.rbac import VALID_ROLES, Permission, has_permission
 from app.core.security import Principal, generate_api_key, hash_api_key
 from app.db.models import ApiKey
@@ -60,12 +61,36 @@ class ApiKeyService:
         await self._session.commit()
         return key, plaintext
 
-    async def list_keys(self, actor: Principal) -> list[ApiKey]:
+    async def list_keys(
+        self,
+        actor: Principal,
+        *,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[ApiKey]:
+        """List the tenant's API keys, cursor-paginated so large key sets are
+        never fully materialized.
+
+        Tenant-scoped. Keyset pagination over the deterministic sort —
+        created_at descending (newest first), id ascending as the
+        total-order tiebreak. The sort key is epoch-microseconds (an integer
+        expression), so the opaque cursor carries only JSON scalars and the
+        keyset comparison is int-vs-int with no timestamp coercion
+        ambiguity.
+        """
         self._require_manage(actor)
-        rows = await self._session.scalars(
-            select(ApiKey).where(ApiKey.tenant_id == actor.tenant_id).order_by(ApiKey.created_at)
+        epoch_micros = cast(func.extract("epoch", ApiKey.created_at) * 1_000_000, BigInteger)
+        return await paginate(
+            session=self._session,
+            base=select(ApiKey).where(ApiKey.tenant_id == actor.tenant_id),
+            count=select(func.count())
+            .select_from(ApiKey)
+            .where(ApiKey.tenant_id == actor.tenant_id),
+            sort_keys=[(epoch_micros, "desc"), (ApiKey.id, "asc")],
+            limit=limit,
+            cursor=cursor,
+            row_key_values=lambda k: [int(k.created_at.timestamp() * 1_000_000), k.id],
         )
-        return list(rows)
 
     async def revoke_key(self, actor: Principal, *, key_id: str) -> None:
         self._require_manage(actor)

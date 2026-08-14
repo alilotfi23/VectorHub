@@ -116,6 +116,15 @@ class ApiKeyCreatedResponse(ApiKeyResponse):
     key: str  # plaintext — shown exactly once, never retrievable again
 
 
+class ApiKeyListResponse(BaseModel):
+    """Cursor-paginated API-key list: `items` plus an opaque `next_cursor`
+    (None on the last page) and the total key count."""
+
+    items: list[ApiKeyResponse]
+    next_cursor: str | None
+    total: int
+
+
 # --- Tenant members ---
 
 # Users belong to exactly one tenant, so "invite" = an admin/owner provisions

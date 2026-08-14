@@ -70,9 +70,40 @@ async def test_list_keys_scoped_to_tenant(db: AsyncSession) -> None:
     svc = ApiKeyService(db)
     await svc.create_key(owner, name="one")
     await svc.create_key(owner, name="two")
-    keys = await svc.list_keys(owner)
-    assert {k.name for k in keys} == {"one", "two"}
-    assert all(k.tenant_id == owner.tenant_id for k in keys)
+    page = await svc.list_keys(owner)
+    assert {k.name for k in page.items} == {"one", "two"}
+    assert page.total == 2
+    assert page.next_cursor is None
+    assert all(k.tenant_id == owner.tenant_id for k in page.items)
+
+
+async def test_list_keys_paginates_newest_first(db: AsyncSession) -> None:
+    _, owner = await _owner(db)
+    svc = ApiKeyService(db)
+    created: list[ApiKey] = []
+    for i in range(5):
+        key, _ = await svc.create_key(owner, name=f"key-{i}")
+        created.append(key)
+
+    collected: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    for _ in range(10):
+        page = await svc.list_keys(owner, limit=2, cursor=cursor)
+        collected.extend(k.id for k in page.items)
+        pages += 1
+        assert page.total == 5
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+
+    assert pages == 3  # 5 keys, limit 2 -> 2 + 2 + 1
+    # Newest first; the two-pass stable sort matches SQL's
+    # (created_at DESC, id ASC) even on a created_at tie.
+    expected = sorted(created, key=lambda k: (k.created_at, k.id))
+    expected.sort(key=lambda k: k.created_at, reverse=True)
+    assert collected == [k.id for k in expected]
+    assert len(set(collected)) == 5
 
 
 async def test_authenticate_valid_revoked_and_expired(db: AsyncSession) -> None:
