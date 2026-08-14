@@ -358,7 +358,7 @@ async def test_forged_tenant_fields_rejected_everywhere(
     headers = _auth_headers(reg["access_token"])
     owner_id = reg["user"]["id"]
     tenant_id = reg["user"]["tenant_id"]
-    forged = {"tenant_id": "other-tenant"}
+    forged = {"tenant_id": "other-tenant", "is_platform_admin": True}
 
     # Seed a collection so the permissions PATCH's dependency resolves and
     # the body validation (the point under test) is what fires.
@@ -377,6 +377,9 @@ async def test_forged_tenant_fields_rejected_everywhere(
         )
         await session.commit()
 
+    # role is legitimate on member/api-key/grant envelopes, so it is forged
+    # only on the auth endpoints that must not accept it.
+    escalated_role = {"role": "owner"}
     cases = [
         (
             "POST",
@@ -386,16 +389,22 @@ async def test_forged_tenant_fields_rejected_everywhere(
                 "password": "password-123",
                 "tenant_name": _unique("t"),
                 **forged,
+                **escalated_role,
             },
             None,
         ),
         (
             "POST",
             f"{API}/auth/login",
-            {"email": reg["user"]["email"], "password": "password-123", **forged},
+            {
+                "email": reg["user"]["email"],
+                "password": "password-123",
+                **forged,
+                **escalated_role,
+            },
             None,
         ),
-        ("POST", f"{API}/auth/refresh", {"refresh_token": "tok", **forged}, None),
+        ("POST", f"{API}/auth/refresh", {"refresh_token": "tok", **forged, **escalated_role}, None),
         (
             "POST",
             f"{API}/tenants/{tenant_id}/members",
@@ -435,7 +444,12 @@ async def test_tenant_create_rejects_forged_fields(
 
     resp = await client.post(
         f"{API}/tenants",
-        json={"name": _unique("t"), "tenant_id": "other-tenant"},
+        json={
+            "name": _unique("t"),
+            "tenant_id": "other-tenant",
+            "role": "owner",
+            "is_platform_admin": True,
+        },
         headers=_auth_headers(reg["access_token"]),
     )
     assert resp.status_code == 422, resp.text

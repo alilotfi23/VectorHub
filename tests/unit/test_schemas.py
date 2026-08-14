@@ -59,13 +59,16 @@ def test_request_schemas_reject_forged_fields(schema: type[BaseModel]) -> None:
     base = _valid_payload(schema)
     assert schema.model_validate(base)  # the valid envelope still validates
 
-    # tenant_id / owner_id exist on NO request envelope — rejected everywhere.
-    for forged in ("tenant_id", "owner_id"):
+    # Fields that exist on NO request envelope — always forged: tenant_id /
+    # owner_id (tenant scoping) and is_platform_admin (privilege escalation).
+    # user_id and role are legitimate on some envelopes (the grantee, the
+    # invited member's / api key's role), so they are forged only where the
+    # schema does not declare them.
+    declared = set(schema.model_fields)
+    forged_fields: set[str] = {"tenant_id", "owner_id", "is_platform_admin"}
+    for field in ("user_id", "role"):
+        if field not in declared:
+            forged_fields.add(field)
+    for forged in forged_fields:
         with pytest.raises(ValidationError):
             schema.model_validate({**base, forged: "forged-value"})
-
-    # user_id is a legitimate grantee field ONLY on the grant envelope; on
-    # every other schema it is forged and must be rejected.
-    if schema is not CollectionPermissionUpdateRequest:
-        with pytest.raises(ValidationError):
-            schema.model_validate({**base, "user_id": "forged-value"})
