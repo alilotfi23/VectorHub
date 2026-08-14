@@ -1,13 +1,17 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import api_keys, auth, collections, tenants
 from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
+from app.db.session import get_session
+from app.schemas.health import HealthReport
+from app.services.health_service import check_health
 
 settings = get_settings()
 
@@ -43,8 +47,14 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
-async def health() -> dict[str, str]:
-    """Phase 1: process liveness only. Dependency checks (Postgres, Redis,
-    workers, adapters) land in Phase 7 per the /health spec."""
-    return {"status": "ok"}
+@app.get("/health", response_model=HealthReport, tags=["infra"])
+async def health(response: Response, session: AsyncSession = Depends(get_session)) -> HealthReport:
+    """Per-dependency health probe (see the /health note in CLAUDE.md).
+
+    Returns 200 while Postgres and Redis are up — ``"degraded"`` when a
+    non-critical dependency (worker, vector backend) is down — and 503 with
+    overall ``"down"`` when a critical dependency is unreachable.
+    """
+    report = await check_health(session)
+    response.status_code = 503 if report.status == "down" else 200
+    return report

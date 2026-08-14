@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # long a *valid* resolution stays cached. Postgres remains the source of
     # truth — the cache is an optimization, never a gate.
     auth_cache_ttl_seconds: int = 300
+    # Worker heartbeat freshness for GET /health's workers check. The Phase 6
+    # arq worker writes vhk:worker:heartbeat:<id> = <epoch-ts>; any heartbeat
+    # newer than this means a live worker.
+    worker_heartbeat_ttl_seconds: int = 30
 
     # "*" for local dev; explicit comma-separated allow-list for staging/prod.
     cors_allowed_origins: str = "*"
