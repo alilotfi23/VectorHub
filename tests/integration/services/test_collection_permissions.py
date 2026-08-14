@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
@@ -344,3 +344,97 @@ async def test_list_permissions_ordered_by_role_then_user_id(db: AsyncSession) -
         ("viewer", min(viewer_a.user_id or "", viewer_b.user_id or "")),
         ("viewer", max(viewer_a.user_id or "", viewer_b.user_id or "")),
     ]
+
+
+async def test_service_methods_reuse_pre_resolved_access(db: AsyncSession) -> None:
+    """The route path hands a CollectionAccess into the service methods; each
+    behaves identically to the name-based path (same gates apply)."""
+    _, owner = await _register(db, "org")
+    _, viewer = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+
+    access = await svc.check_access(owner, Permission.TENANT_MANAGE, name=collection.name)
+    assert access.collection.id == collection.id
+
+    await svc.grant_permission(owner, access=access, user_id=viewer.user_id or "", role="editor")
+    assert await svc.check_access(viewer, Permission.COLLECTION_WRITE, name=collection.name)
+
+    grants = await svc.list_permissions(owner, access=access)
+    assert [g.user_id for g in grants] == [viewer.user_id]
+
+    await svc.revoke_permission(owner, access=access, user_id=viewer.user_id or "")
+    assert await svc.list_permissions(owner, access=access) == []
+
+    # Gates still fire on the access path: an editor without manage is rejected.
+    editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
+    with pytest.raises(AppError) as exc:
+        await svc.grant_permission(
+            editor, access=access, user_id=owner.user_id or "", role="viewer"
+        )
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+
+
+async def test_service_methods_require_exactly_one_of_name_or_access(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    access = await svc.resolve_access(owner, name=collection.name)
+
+    # Neither: programming error, not a silent 404.
+    with pytest.raises(ValueError):
+        await svc.grant_permission(owner, user_id=owner.user_id or "", role="viewer")
+    # Both: ambiguous, rejected.
+    with pytest.raises(ValueError):
+        await svc.grant_permission(
+            owner,
+            name=collection.name,
+            access=access,
+            user_id=owner.user_id or "",
+            role="viewer",
+        )
+    # Exactly one works.
+    await svc.grant_permission(owner, access=access, user_id=owner.user_id or "", role="viewer")
+
+
+async def test_grant_flow_resolves_collection_once(db: AsyncSession) -> None:
+    """Route flow: the dependency resolves the collection once, and the
+    service call that follows reuses it — no second collection lookup."""
+    _, owner = await _register(db, "org")
+    _, viewer = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+
+    collection_selects: list[str] = []
+
+    def _count(
+        conn: object,
+        cursor: object,
+        statement: object,
+        params: object,
+        context: object,
+        executemany: bool,
+    ) -> None:  # noqa: ANN001
+        sql = str(statement).strip().lower()
+        # `collections ` (with trailing space) matches only the collections
+        # table, not collection_permissions.
+        if sql.startswith("select") and "from collections " in sql:
+            collection_selects.append(sql)
+
+    bind = db.get_bind()
+    engine = getattr(bind, "sync_engine", bind)
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        # The dependency's resolution: exactly one collections SELECT.
+        access = await svc.check_access(owner, Permission.TENANT_MANAGE, name=collection.name)
+        assert len(collection_selects) == 1
+
+        # The handler's service calls reuse that access: still one SELECT.
+        await svc.grant_permission(
+            owner, access=access, user_id=viewer.user_id or "", role="editor"
+        )
+        await svc.list_permissions(owner, access=access)
+        await svc.revoke_permission(owner, access=access, user_id=viewer.user_id or "")
+        assert len(collection_selects) == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)

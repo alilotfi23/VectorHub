@@ -15,10 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, has_permission
 from app.core.security import Principal, decode_access_token
-from app.db.models import Collection
 from app.db.session import get_session
 from app.services.api_key_service import ApiKeyService
-from app.services.collection_service import CollectionService
+from app.services.collection_service import CollectionAccess, CollectionService
 
 API_KEY_HEADER = "X-API-Key"
 
@@ -65,21 +64,25 @@ def require_platform_admin(principal: Principal = Depends(get_current_principal)
     return principal
 
 
-def require_collection_permission(permission: Permission) -> Callable[..., Awaitable[Collection]]:
+def require_collection_permission(
+    permission: Permission,
+) -> Callable[..., Awaitable[CollectionAccess]]:
     """Dependency factory for collection-scoped routes.
 
     Resolves the collection named in the path within the caller's tenant
     (a missing OR foreign collection raises COLLECTION_NOT_FOUND — no
     existence oracle) and checks `permission` against the principal's
     tenant role elevated by any resource-level grant on that collection.
-    The resolved Collection is injected so route handlers need not re-query.
+    The CollectionAccess (collection + caller's grant) is injected so route
+    handlers and service methods share one resolution per request instead
+    of re-querying.
     """
 
     async def checker(
         name: str,
         principal: Principal = Depends(get_current_principal),
         session: AsyncSession = Depends(get_session),
-    ) -> Collection:
+    ) -> CollectionAccess:
         return await CollectionService(session).check_access(principal, permission, name=name)
 
     return checker
