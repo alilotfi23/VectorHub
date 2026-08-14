@@ -1,12 +1,13 @@
 """Layer 3 of the cross-tenant isolation suite — collection permissions, e2e.
 
 Two real principals (registered tenants) drive the full HTTP surface of the
-resource-level grant API. Mirrors cases E1/E2/E3/E8 of the isolation design
-doc, adapted to a control-plane surface: indistinguishable data (identical
-collection names), fail-closed 404s, schema-level rejection of forged
-`tenant_id`, and a byte-identical negative control proving responses can't
-act as an existence oracle. See docs/superpowers/specs/
-2026-08-14-tenant-isolation-tests-design.md.
+resource-level grant API, each case exercised with BOTH principal types the
+design doc requires — JWT (Bearer) and per-tenant API keys. Mirrors cases
+E1/E2/E3/E8 of the isolation design doc, adapted to a control-plane surface:
+indistinguishable data (identical collection names), fail-closed 404s,
+schema-level rejection of forged `tenant_id`, and a byte-identical negative
+control proving responses can't act as an existence oracle. See
+docs/superpowers/specs/2026-08-14-tenant-isolation-tests-design.md.
 """
 
 import uuid
@@ -63,6 +64,24 @@ def _auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+AUTH_STYLES = ("jwt", "api_key")
+
+
+async def _principal_headers(client: AsyncClient, reg: dict[str, Any], auth: str) -> dict[str, str]:
+    """Per-tenant principal credentials: a Bearer token (JWT) or a per-tenant
+    API key minted at owner rank (the grants surface requires TENANT_MANAGE)
+    — the design doc's two-principal-types requirement."""
+    if auth == "jwt":
+        return _auth_headers(reg["access_token"])
+    created = await client.post(
+        f"{API}/api-keys",
+        json={"name": f"iso-{uuid.uuid4().hex[:10]}", "role": "owner"},
+        headers=_auth_headers(reg["access_token"]),
+    )
+    assert created.status_code == 201, created.text
+    return {"X-API-Key": created.json()["key"]}
+
+
 async def _seed_collection(
     session_factory: async_sessionmaker[AsyncSession], tenant_id: str, name: str
 ) -> None:
@@ -93,15 +112,16 @@ async def _provision_member(
     return cast(dict[str, Any], resp.json())
 
 
+@pytest.mark.parametrize("auth", AUTH_STYLES)
 async def test_e1_same_name_collision_grants_invisible_across_tenants(
-    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
 ) -> None:
     """A and B both have `products`; grants made in A are invisible from B on
     every path, and same-name ops never touch the other tenant's rows."""
     reg_a = await _register(client, "orga")
     reg_b = await _register(client, "orgb")
-    headers_a = _auth_headers(reg_a["access_token"])
-    headers_b = _auth_headers(reg_b["access_token"])
+    headers_a = await _principal_headers(client, reg_a, auth)
+    headers_b = await _principal_headers(client, reg_b, auth)
     tenant_a = reg_a["user"]["tenant_id"]
     tenant_b = reg_b["user"]["tenant_id"]
 
@@ -149,15 +169,16 @@ async def test_e1_same_name_collision_grants_invisible_across_tenants(
     assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
 
 
+@pytest.mark.parametrize("auth", AUTH_STYLES)
 async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
-    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
 ) -> None:
     """B's GET/PATCH/DELETE on A's distinctly-named collection all 404, and
     A's grants survive."""
     reg_a = await _register(client, "orga")
     reg_b = await _register(client, "orgb")
-    headers_a = _auth_headers(reg_a["access_token"])
-    headers_b = _auth_headers(reg_b["access_token"])
+    headers_a = await _principal_headers(client, reg_a, auth)
+    headers_b = await _principal_headers(client, reg_b, auth)
     tenant_a = reg_a["user"]["tenant_id"]
 
     await _seed_collection(session_factory, tenant_a, "a-only")
@@ -190,15 +211,16 @@ async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
     assert [g["user_id"] for g in a_list.json()["items"]] == [member_a["id"]]
 
 
+@pytest.mark.parametrize("auth", AUTH_STYLES)
 async def test_e3_forged_tenant_id_rejected_at_schema(
-    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
 ) -> None:
     """A PATCH body carrying `tenant_id` is rejected with 422 (the envelope
     forbids the field) — the forged value never reaches the service and no
     grant is created."""
     reg_a = await _register(client, "orga")
     reg_b = await _register(client, "orgb")
-    headers_a = _auth_headers(reg_a["access_token"])
+    headers_a = await _principal_headers(client, reg_a, auth)
     tenant_a = reg_a["user"]["tenant_id"]
     tenant_b = reg_b["user"]["tenant_id"]
     assert tenant_a != tenant_b
@@ -219,15 +241,16 @@ async def test_e3_forged_tenant_id_rejected_at_schema(
     assert a_list.json()["items"] == []
 
 
+@pytest.mark.parametrize("auth", AUTH_STYLES)
 async def test_e8_negative_control_no_existence_oracle(
-    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
 ) -> None:
     """A tenant with no collections probes a name that exists in another
     tenant and a random name: byte-identical 404s."""
     reg_a = await _register(client, "orga")
     reg_c = await _register(client, "orgc")
-    headers_a = _auth_headers(reg_a["access_token"])
-    headers_c = _auth_headers(reg_c["access_token"])
+    headers_a = await _principal_headers(client, reg_a, auth)
+    headers_c = await _principal_headers(client, reg_c, auth)
     tenant_a = reg_a["user"]["tenant_id"]
 
     await _seed_collection(session_factory, tenant_a, "products")
