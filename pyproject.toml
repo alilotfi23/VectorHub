@@ -24,6 +24,7 @@ dependencies = [
     "chromadb>=1.5.9",
     "qdrant-client>=1.19.0",
     "weaviate-client>=4.23.0",
+    "pymilvus>=3.0.1",
 ]
 
 [dependency-groups]
@@ -81,6 +82,12 @@ files = ["app", "tests", "alembic"]
 [[tool.mypy.overrides]]
 # testcontainers ships no type stubs (import-untyped under strict).
 module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pymilvus ships no type stubs (import-untyped under strict); the adapter
+# casts the handful of Any-returning SDK calls at the boundary.
+module = ["pymilvus", "pymilvus.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
