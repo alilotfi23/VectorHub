@@ -1,0 +1,150 @@
+# VectorHub platform alert rules.
+#
+# Written against the metrics exposed by GET /metrics (app/core/metrics.py +
+# prometheus-fastapi-instrumentator):
+#   vhk_requests_total{method, path, status}            — every HTTP request, exact status code
+#   vhk_health_checks_total{check, status=ok|down}      — per-probe outcomes; check is
+#                                                         postgres|redis|workers|adapter:<name>
+#   vhk_rate_limit_rejections_total{limit}              — 429s, limit is route_qps|api_key_qps|tenant_qps
+#   http_requests_total{handler, status=2xx|4xx|5xx}    — instrumentator standard counter
+#   http_request_duration_highr_seconds_bucket          — fine-grained latency histogram (percentiles)
+#
+# Two semantics notes that shape the rules:
+#   * The health counters increment once per /health probe. A "down" outcome is
+#     therefore a rate>0 signal, and recovery is visible as that rate returning
+#     to 0. Because the counters never decrease, "flapping" must be detected as
+#     *distinct episodes with a clean gap between them* — see VhkBackendFlapping.
+#   * Adapter/worker failures degrade /health to 200 ("degraded") by design, so
+#     their rules are warnings, not pages. Postgres/Redis drive "down" (503) —
+#     only they are critical.
+#
+# Reference: https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/
+
+groups:
+  - name: vhk-platform
+    rules:
+      # --- Critical: control plane unreachable ---------------------------------
+
+      - alert: VhkCriticalDependencyDown
+        # Postgres or Redis failing probes. These are the only checks that take
+        # /health to "down" (HTTP 503) — k8s will restart the pod, so this pages.
+        expr: rate(vhk_health_checks_total{check=~"postgres|redis", status="down"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical dependency {{ $labels.check }} is down"
+          description: >-
+            The {{ $labels.check }} dependency has failed health probes for at
+            least 2 minutes. /health reports overall "down" (HTTP 503); pods may
+            be restarting. Check the dependency's connectivity, credentials, and
+            the app's connection pool before investigating the app itself.
+
+      # --- Traffic health ------------------------------------------------------
+
+      - alert: VhkErrorRateSpike
+        # 5xx share of all requests > 5% for 5 minutes. Uses vhk_requests_total
+        # (exact status codes) rather than the instrumentator's grouped counter.
+        expr: |
+          sum(rate(vhk_requests_total{status=~"5.."}[5m]))
+            /
+          sum(rate(vhk_requests_total[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error rate above 5%"
+          description: >-
+            {{ $value | humanizePercentage }} of requests returned 5xx over the
+            last 5 minutes. Check recent deploys, the failing route's logs
+            (search the request ID from the response header), and adapter
+            health before paging further.
+
+      - alert: VhkRateLimitFlood
+        # Sustained 429 volume — clients hammering a limit, or a misconfigured
+        # tenant/API-key rate. One per second average over 5 minutes.
+        expr: sum(rate(vhk_rate_limit_rejections_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate-limit rejections flooding"
+          description: >-
+            {{ $value | humanize }} rejections/second over 5 minutes. The 429
+            response bodies name the limit (route_qps / tenant_qps /
+            api_key_qps); rate_limit_exceeded log lines carry the tenant/key ids.
+            Likely a runaway client or a quota set too low.
+
+      # --- Backends (degrade /health, never fail it) ----------------------------
+
+      - alert: VhkWorkerHeartbeatStale
+        # No fresh arq worker heartbeat — batch jobs won't run even though the
+        # API serves. 15m so a deploy (workers briefly absent during rollout)
+        # doesn't page.
+        expr: rate(vhk_health_checks_total{check="workers", status="down"}[5m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Background workers absent"
+          description: >-
+            No worker heartbeat fresher than worker_heartbeat_ttl_seconds for
+            15 minutes. Async batch jobs (POST .../vectors/batch) will enqueue
+            but never complete. Check the arq worker deployment.
+
+      - alert: VhkBackendDown
+        # A vector backend failing probes. The platform stays serviceable
+        # (degraded, HTTP 200) — warn so the backend owner knows before a
+        # client does. One alert per adapter via the check label.
+        expr: rate(vhk_health_checks_total{check=~"adapter:.*", status="down"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vector backend {{ $labels.check }} is down"
+          description: >-
+            {{ $labels.check }} has failed health probes for 5 minutes. The
+            platform reports degraded; collections on that backend are
+            unreachable. Check the backend service and the adapter's connection
+            config.
+
+      - alert: VhkBackendFlapping
+        # Flapping = two distinct down episodes with a clean healthy gap,
+        # currently healthy. The health counters only ever increase, so "two
+        # episodes" must be proven: down 25-30m ago, NOT down 15-20m ago, down
+        # 5-10m ago, and not down in the last 5m. This catches a backend that
+        # restarts/crashes repeatedly without paging on a single clean recovery.
+        expr: |
+          increase(vhk_health_checks_total{check=~"adapter:.*|workers", status="down"}[5m] offset 25m) > 0
+            and increase(vhk_health_checks_total{check=~"adapter:.*|workers", status="down"}[5m] offset 15m) == 0
+            and increase(vhk_health_checks_total{check=~"adapter:.*|workers", status="down"}[5m] offset 5m) > 0
+            and increase(vhk_health_checks_total{check=~"adapter:.*|workers", status="down"}[5m]) == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend {{ $labels.check }} flapping"
+          description: >-
+            {{ $labels.check }} had two or more down episodes in the last 30
+            minutes but is currently healthy — a crash/restart loop, not a
+            clean outage. Investigate before it lands on a down state.
+
+      # --- Latency --------------------------------------------------------------
+
+      - alert: VhkHighP99Latency
+        # p99 of the fine-grained latency histogram above 2s for 10 minutes.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(http_request_duration_highr_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 latency above 2s"
+          description: >-
+            p99 request latency is {{ $value }}s over the last 10 minutes.
+            Correlate with backend health and the rate-limit rejection rate
+            before profiling.

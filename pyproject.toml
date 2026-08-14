@@ -30,6 +30,10 @@ dev = [
     "aiosqlite>=0.20",
     "testcontainers[postgres, redis]>=4.6",
     "pre-commit>=3.7",
+    # Config-file tests: deploy/monitoring (alerts.yml, Grafana dashboard) are
+    # validated by parsing them; PyYAML is otherwise only a transitive dep.
+    "pyyaml>=6.0",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.ruff]
