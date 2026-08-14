@@ -1,0 +1,51 @@
+# VectorHub Alertmanager configuration.
+#
+# Routes the severity labels emitted by deploy/monitoring/prometheus/alerts.yml:
+#   critical -> pager (PagerDuty)   — the only rules that drive /health to 503
+#   warning  -> slack (default)     — degraded backends, error spikes, 429 floods
+#
+# Credentials are injected via environment variables — Alertmanager expands
+# ${VAR} references in this file at startup, so no secrets live in the repo.
+# Both must be set in the deployment's environment:
+#   SLACK_WEBHOOK_URL        — incoming-webhook URL for the #platform-alerts channel
+#   PAGERDUTY_ROUTING_KEY    — PagerDuty Events API v2 routing key
+#
+# Reference: https://prometheus.io/docs/alerting/latest/configuration/
+
+route:
+  # Default receiver: everything that is not explicitly routed below (warnings,
+  # and any future rule that omits a severity) lands in Slack.
+  receiver: slack
+
+  # Group related alerts so a flapping backend doesn't page once per evaluation.
+  # alertname groups by rule; check/limit keep per-adapter and per-limit
+  # incidents distinct instead of collapsing into one giant notification.
+  group_by: ["alertname", "check", "limit"]
+  group_wait: 30s        # buffer before the first notification of a new group
+  group_interval: 5m     # min time between notifications for an already-firing group
+  repeat_interval: 4h    # how often a still-firing alert re-notifies
+
+  routes:
+    # Critical only: Postgres/Redis down is the one condition that takes the
+    # whole platform down (k8s restart loop), so it pages. `continue: false`
+    # (default) keeps criticals out of Slack — the pager is the escalation.
+    - matchers:
+        - severity="critical"
+      receiver: pager
+
+receivers:
+  - name: slack
+    slack_configs:
+      - api_url: ${SLACK_WEBHOOK_URL}
+        channel: "#platform-alerts"
+        title: '{{ template "vhk.title" . }}'
+        text: '{{ template "vhk.text" . }}'
+
+  - name: pager
+    pagerduty_configs:
+      - routing_key: ${PAGERDUTY_ROUTING_KEY}
+        severity: critical
+        description: '{{ template "vhk.title" . }}'
+
+templates:
+  - /etc/alertmanager/templates/*.tmpl

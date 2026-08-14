@@ -8,6 +8,8 @@ Alert rules and a Grafana dashboard for the metrics exposed by
 | Path | Purpose |
 | --- | --- |
 | `prometheus/alerts.yml` | Prometheus alert rules for the `vhk_*` + `http_*` metric families |
+| `alertmanager/alertmanager.yml` | Alertmanager routing: `critical` → pager (PagerDuty), `warning`/default → Slack, env-driven credentials |
+| `alertmanager/templates/vhk.tmpl` | Notification title/text templates referenced by the Alertmanager config |
 | `grafana/dashboards/platform.json` | Dashboard: request rate by status, error rate, latency percentiles, per-dependency health failures, rate-limit rejections, 429 rate, response size |
 
 Validate with the bundled unit test (`tests/unit/test_monitoring_config.py`),
@@ -24,10 +26,33 @@ rule_files:
   - /etc/prometheus/alerts.yml   # copy of deploy/monitoring/prometheus/alerts.yml
 ```
 
-Rules emit `severity` labels (`critical` | `warning`). Route them in
-Alertmanager, e.g. critical → pager, warning → Slack. All rules reference
-label names that exist on the platform's metrics (checked against
-`app/core/metrics.py` and `app/services/health_service.py`):
+Rules emit `severity` labels (`critical` | `warning`). A shipped Alertmanager
+config (`alertmanager/alertmanager.yml`) routes them: `critical` → PagerDuty,
+`warning` and anything unlabeled → Slack. Credentials are injected by env vars
+(`SLACK_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY`) — Alertmanager expands `${VAR}`
+at startup, so the config carries no secrets. Mount the config and templates:
+
+```yaml
+# alertmanager.yml (container mount points)
+volumes:
+  - ./deploy/monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+  - ./deploy/monitoring/alertmanager/templates:/etc/alertmanager/templates
+environment:
+  SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
+  PAGERDUTY_ROUTING_KEY: "..."
+```
+
+Prometheus must be told to forward:
+
+```yaml
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+```
+
+All rules reference label names that exist on the platform's metrics (checked
+against `app/core/metrics.py` and `app/services/health_service.py`):
 
 - `vhk_requests_total{method, path, status}` — exact status code in `status`
 - `vhk_health_checks_total{check, status}` — `check` is `postgres` | `redis` |

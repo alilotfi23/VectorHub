@@ -1,0 +1,24 @@
+{{/* VectorHub notification templates. Referenced by
+    deploy/monitoring/alertmanager/alertmanager.yml; mounted into the
+    Alertmanager container at /etc/alertmanager/templates/. */}}
+
+{{ define "vhk.title" -}}
+  [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ range .Alerts }}{{ .Labels.alertname }}{{ end }}
+{{- end }}
+
+{{ define "vhk.text" -}}
+{{ range .Alerts -}}
+*Alert:* {{ .Labels.alertname }}
+*Severity:* {{ .Labels.severity }}
+*Summary:* {{ .Annotations.summary }}
+*Description:* {{ .Annotations.description }}
+*Value:* {{ .Value }}
+*Since:* {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
+{{- if .Labels.check }}
+*Check:* {{ .Labels.check }}
+{{- end }}
+{{- if .Labels.limit }}
+*Limit:* {{ .Labels.limit }}
+{{- end }}
+{{ end -}}
+{{ end }}

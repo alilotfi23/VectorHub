@@ -8,7 +8,9 @@ repo's test env yet. These tests pin the essential structure:
 - every PromQL expr references only metric names that actually exist
   (vhk_* families from app/core/metrics.py, http_* from the instrumentator);
 - the dashboard parses, has the datasource variable, and every panel's
-  targets reference known metrics too.
+  targets reference known metrics too;
+- Alertmanager routing covers every severity the rules emit (critical → pager,
+  warning/default → slack) with credentials from env vars, never literals.
 """
 
 import json
@@ -21,6 +23,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ALERTS = ROOT / "deploy" / "monitoring" / "prometheus" / "alerts.yml"
 DASHBOARD = ROOT / "deploy" / "monitoring" / "grafana" / "dashboards" / "platform.json"
+ALERTMANAGER = ROOT / "deploy" / "monitoring" / "alertmanager" / "alertmanager.yml"
+TEMPLATES = ROOT / "deploy" / "monitoring" / "alertmanager" / "templates" / "vhk.tmpl"
 
 # Metric families defined in app/core/metrics.py plus those registered by
 # prometheus-fastapi-instrumentator (see app/main.py).
@@ -138,3 +142,58 @@ def test_dashboard_parses_with_datasource_variable() -> None:
             assert target["refId"], f"panel {panel['id']} target missing refId"
             _assert_known_metrics(target["expr"])
     assert len(ids) == len(set(ids)), "panel ids must be unique"
+
+
+def _load_alertmanager() -> dict[str, Any]:
+    with ALERTMANAGER.open(encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    assert isinstance(doc, dict), "alertmanager.yml must parse to a mapping"
+    return doc
+
+
+def test_alertmanager_routes_every_emitted_severity() -> None:
+    """Cross-checks routing against the rules: every severity alerts.yml emits
+    must land somewhere — critical routed explicitly to the pager, warning
+    covered by the default Slack receiver. This is the coupling that prevents
+    a new severity from silently falling through to no one."""
+    am = _load_alertmanager()
+    receivers = {r["name"] for r in am["receivers"]}
+    assert {"slack", "pager"} <= receivers, "receivers must define slack and pager"
+
+    route = am["route"]
+    assert route["receiver"] == "slack", "default receiver must be slack (warnings)"
+    assert route["group_by"], "route must group alerts"
+
+    routed: dict[str, str] = {}
+    for child in route.get("routes", []):
+        for matcher in child["matchers"]:
+            if matcher.startswith("severity="):
+                routed[matcher.split("=", 1)[1].strip('"')] = child["receiver"]
+    assert routed == {"critical": "pager"}, f"unexpected severity routing: {routed}"
+
+    emitted = {rule["labels"]["severity"] for rule in _load_alerts()}
+    assert emitted <= set(routed) | {"warning"}, (
+        f"severity {sorted(emitted - set(routed) - {'warning'})} has no route"
+    )
+
+
+def test_alertmanager_credentials_are_env_only() -> None:
+    """Receiver credentials come from ${VAR} expansion, never literals — no
+    webhook URLs, tokens, or keys may be committed."""
+    text = ALERTMANAGER.read_text(encoding="utf-8")
+    assert "${SLACK_WEBHOOK_URL}" in text, "slack receiver must use the env var"
+    assert "${PAGERDUTY_ROUTING_KEY}" in text, "pager receiver must use the env var"
+    for secret_marker in ("xoxb-", "xoxp-", "hooks.slack.com/services/", "PDKK-"):
+        assert secret_marker not in text, f"literal secret marker found: {secret_marker}"
+
+
+def test_alertmanager_templates_referenced_and_defined() -> None:
+    """The config points at a templates glob, and the shipped template file
+    defines the two templates the receivers reference (vhk.title, vhk.text)."""
+    am = _load_alertmanager()
+    assert am.get("templates"), "alertmanager.yml must reference a templates path"
+    assert any("*.tmpl" in p for p in am["templates"]), "templates glob must cover *.tmpl files"
+
+    tmpl = TEMPLATES.read_text(encoding="utf-8")
+    assert 'define "vhk.title"' in tmpl, "template must define vhk.title"
+    assert 'define "vhk.text"' in tmpl, "template must define vhk.text"
