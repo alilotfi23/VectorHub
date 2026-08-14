@@ -12,7 +12,7 @@ app/main.py.
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.config import get_settings
 from app.schemas.auth import StrictRequest
@@ -21,10 +21,48 @@ _VECTOR_MAX_DIMENSION = get_settings().vector_max_dimension
 
 RESERVED_METADATA_PREFIX = "_vhk_"
 
+_SPARSE_MAX_CARDINALITY = get_settings().sparse_max_cardinality
+
+
+class SparseVectorIn(StrictRequest):
+    """Client-supplied sparse vector: indices ascending, no duplicates,
+    len(indices) == len(values), bounded by SPARSE_MAX_CARDINALITY."""
+
+    indices: list[int] = Field(
+        min_length=1,
+        max_length=_SPARSE_MAX_CARDINALITY,
+        description=(
+            "Non-zero positions (ascending, unique). "
+            f"Cardinality is bounded by SPARSE_MAX_CARDINALITY ({_SPARSE_MAX_CARDINALITY})."
+        ),
+    )
+    values: list[float] = Field(
+        min_length=1,
+        max_length=_SPARSE_MAX_CARDINALITY,
+        description="Non-zero values, aligned with indices",
+    )
+
+    @field_validator("indices")
+    @classmethod
+    def _validate_indices(cls, indices: list[int]) -> list[int]:
+        if any(i < 0 for i in indices):
+            raise ValueError("sparse indices must be non-negative")
+        if any(a >= b for a, b in zip(indices, indices[1:], strict=False)):
+            raise ValueError("sparse indices must be strictly ascending and unique")
+        return indices
+
+    @model_validator(mode="after")
+    def _aligned(self) -> "SparseVectorIn":
+        if len(self.indices) != len(self.values):
+            raise ValueError("sparse indices and values must have the same length")
+        return self
+
 
 class VectorRecordIn(StrictRequest):
     """One client-supplied vector record. No tenant_id, no timestamps —
-    both are derived server-side."""
+    both are derived server-side. ``sparse_vector`` is optional and only
+    meaningful on Qdrant/Milvus (required for hybrid search there); it is
+    stored with the record so a later hybrid query can match it."""
 
     id: str = Field(
         min_length=1,
@@ -37,6 +75,13 @@ class VectorRecordIn(StrictRequest):
         max_length=_VECTOR_MAX_DIMENSION,
         description=f"Pre-computed embedding, 1–{_VECTOR_MAX_DIMENSION} floats",
         examples=[[0.1, 0.2, 0.3]],
+    )
+    sparse_vector: SparseVectorIn | None = Field(
+        default=None,
+        description=(
+            "Optional sparse vector (indices+values) for hybrid search on "
+            "Qdrant/Milvus; ignored on other backends."
+        ),
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -173,3 +218,58 @@ class QueryResultOut(BaseModel):
 
 class QueryResponse(BaseModel):
     results: list[QueryResultOut]
+
+
+# --- Hybrid search (Phase 4: qdrant sparse+vector, weaviate text+vector) ---
+#
+# Request shape per CLAUDE.md: `vector` (required), `sparse_vector` (required
+# on Qdrant/Milvus — enforced by the service against the backend's capability
+# as VECTOR_SPARSE_REQUIRED), `query_text` (required on Weaviate, driving its
+# BM25 side), and a single normalized `alpha` (0.0 = pure keyword,
+# 1.0 = pure dense, default 0.75). Chroma has no hybrid — the adapter raises
+# VALIDATION_UNSUPPORTED_OPERATION (details.capability = "hybrid_search").
+
+
+class HybridQueryRequest(StrictRequest):
+    vector: list[float] = Field(
+        min_length=1,
+        max_length=_VECTOR_MAX_DIMENSION,
+        description=f"Pre-computed query embedding, 1–{_VECTOR_MAX_DIMENSION} floats",
+    )
+    sparse_vector: SparseVectorIn | None = Field(
+        default=None,
+        description=(
+            "Sparse vector (indices+values) — required on Qdrant/Milvus hybrid "
+            "(422 VECTOR_SPARSE_REQUIRED otherwise); ignored on Weaviate."
+        ),
+    )
+    query_text: str | None = Field(
+        default=None,
+        description=(
+            "Text driving the BM25 keyword side — required on Weaviate hybrid; "
+            "ignored on Qdrant/Milvus."
+        ),
+    )
+    alpha: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description="Fusion weight: 0.0 = pure keyword, 1.0 = pure dense, default 0.75",
+    )
+    top_k: int = Field(
+        default=10,
+        ge=1,
+        le=1000,
+        description="Number of results, 1–1000 (platform-wide ceiling regardless of backend)",
+    )
+    filters: dict[str, Any] | None = Field(
+        default=None,
+        description="Same normalized metadata filter as /query (backend capability permitting)",
+    )
+
+    @field_validator("filters")
+    @classmethod
+    def _validate_filters(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            validate_filter(value)
+        return value

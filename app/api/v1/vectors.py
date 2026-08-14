@@ -8,11 +8,13 @@ batch endpoint land in later phases.
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.base import SparseVector
 from app.api.deps import get_current_principal, require_collection_permission
 from app.core.rbac import Permission
 from app.core.security import Principal
 from app.db.session import get_session
 from app.schemas.vectors import (
+    HybridQueryRequest,
     QueryRequest,
     QueryResponse,
     QueryResultOut,
@@ -85,6 +87,46 @@ async def query_vectors(
         principal,
         access=access,
         vector=body.vector,
+        top_k=body.top_k,
+        filters=body.filters,
+    )
+    return QueryResponse(
+        results=[
+            QueryResultOut(
+                id=r.id,
+                score=r.score,
+                metadata=r.metadata,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+            for r in results
+        ]
+    )
+
+
+@router.post("/{name}/hybrid-query", response_model=QueryResponse)
+async def hybrid_query(
+    body: HybridQueryRequest,
+    access: CollectionAccess = Depends(require_collection_permission(Permission.VECTOR_READ)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> QueryResponse:
+    """Hybrid dense+keyword search. Input contract per backend capability
+    (see GET /capabilities): Qdrant requires ``sparse_vector``
+    (422 VECTOR_SPARSE_REQUIRED), Weaviate requires ``query_text``, Chroma
+    raises 400 VALIDATION_UNSUPPORTED_OPERATION. ``alpha`` fuses the two
+    sides (0.0 = pure keyword, 1.0 = pure dense)."""
+    results = await SearchService(session).hybrid(
+        principal,
+        access=access,
+        vector=body.vector,
+        sparse_vector=(
+            SparseVector(indices=body.sparse_vector.indices, values=body.sparse_vector.values)
+            if body.sparse_vector is not None
+            else None
+        ),
+        query_text=body.query_text,
+        alpha=body.alpha,
         top_k=body.top_k,
         filters=body.filters,
     )

@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # Vector backends — adapters consume these from Phase 3 onward.
     qdrant_url: str = "http://localhost:6333"
     weaviate_url: str = "http://localhost:8080"
+    # Weaviate's gRPC channel (query transport); the HTTP REST port is
+    # WEAVIATE_URL's port. Testcontainers map both ports independently.
+    weaviate_grpc_port: int = 50051
     milvus_url: str = "http://localhost:19530"
     chroma_url: str = "http://localhost:8000"
 

@@ -26,6 +26,7 @@ Phase 4+ adapters document theirs). A future phase may normalize scores
 once all four backends are in and the discrepancy is observable.
 """
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,6 +37,30 @@ from pydantic import BaseModel, Field
 # The platform's v1 distance metrics. Backend-specific spellings (Chroma's
 # "l2"/"ip" spaces, etc.) are translated inside each adapter.
 DistanceMetric = Literal["cosine", "euclidean", "dot"]
+
+# Reserved payload/property keys every adapter stores alongside user metadata
+# (same names across backends; the platform's API schemas reject user keys
+# with this prefix). The tenant key doubles as the Qdrant is_tenant partition
+# field.
+RESERVED_PREFIX = "_vhk_"
+RESERVED_KEYS = (
+    f"{RESERVED_PREFIX}tenant_id",
+    f"{RESERVED_PREFIX}created_at",
+    f"{RESERVED_PREFIX}updated_at",
+)
+
+
+def point_uuid(tenant_id: str, platform_id: str) -> str:
+    """Deterministic backend point/object id for a (tenant, platform id)
+    pair. Qdrant requires uint/UUID point ids and Weaviate requires UUIDs,
+    and both are global to the physical collection — so two tenants' same
+    platform id (``doc-1`` under A and B) must map to distinct backend ids.
+    UUID5 over ``{tenant_id}:{platform_id}`` is deterministic (idempotent
+    upserts and deletes re-derive the same id) and collision-free by
+    construction. The platform id itself is stored in the payload/properties
+    under ``_vhk_id`` and recovered on read.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{platform_id}"))
 
 
 class SparseVector(BaseModel):

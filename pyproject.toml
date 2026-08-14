@@ -22,6 +22,8 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.24",
     "arq>=0.28.0",
     "chromadb>=1.5.9",
+    "qdrant-client>=1.19.0",
+    "weaviate-client>=4.23.0",
 ]
 
 [dependency-groups]

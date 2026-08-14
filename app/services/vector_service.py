@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.base import VectorDBAdapter, VectorRecord
+from app.adapters.base import SparseVector, VectorDBAdapter, VectorRecord
 from app.adapters.registry import registry
 from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission, resolve_permission
@@ -83,6 +83,11 @@ class VectorService:
                 id=r.id,
                 vector=r.vector,
                 metadata=r.metadata,
+                sparse_vector=(
+                    SparseVector(indices=r.sparse_vector.indices, values=r.sparse_vector.values)
+                    if r.sparse_vector is not None
+                    else None
+                ),
                 tenant_id=actor.tenant_id,
                 created_at=now,
                 updated_at=now,
