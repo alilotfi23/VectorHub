@@ -1,0 +1,63 @@
+"""Route dependencies: resolve the authenticated Principal and gate permissions.
+
+Principal is derived exclusively from presented credentials (Bearer JWT or
+X-API-Key header) — never from request bodies. Route handlers should depend
+on get_current_principal or require_permission(...) rather than parsing
+headers themselves, so a future jti-revocation check (Phase 6, Redis) slots
+in at exactly one place.
+"""
+
+from collections.abc import Callable
+
+from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import AppError, ErrorCode
+from app.core.rbac import Permission, has_permission
+from app.core.security import Principal, decode_access_token
+from app.db.session import get_session
+from app.services.api_key_service import ApiKeyService
+
+API_KEY_HEADER = "X-API-Key"
+
+
+async def get_current_principal(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> Principal:
+    auth_header = request.headers.get("Authorization", "")
+    principal: Principal
+    if auth_header.lower().startswith("bearer "):
+        principal = decode_access_token(auth_header[7:].strip())
+    else:
+        api_key = request.headers.get(API_KEY_HEADER)
+        if not api_key:
+            raise AppError(ErrorCode.AUTH_INVALID_CREDENTIALS, "Not authenticated", status_code=401)
+        resolved = await ApiKeyService(session).authenticate(api_key)
+        if resolved is None:
+            raise AppError(ErrorCode.AUTH_INVALID_CREDENTIALS, "Invalid API key", status_code=401)
+        principal = resolved
+    request.state.principal = principal  # for middleware (Phase 6 audit, etc.)
+    return principal
+
+
+def require_permission(permission: Permission) -> Callable[[Principal], Principal]:
+    """Dependency factory: reject principals lacking `permission` (403)."""
+
+    def checker(principal: Principal = Depends(get_current_principal)) -> Principal:
+        if not has_permission(principal, permission):
+            raise AppError(
+                ErrorCode.AUTH_INSUFFICIENT_SCOPE,
+                f"Requires permission: {permission.value}",
+                status_code=403,
+            )
+        return principal
+
+    return checker
+
+
+def require_platform_admin(principal: Principal = Depends(get_current_principal)) -> Principal:
+    if not principal.is_platform_admin:
+        raise AppError(
+            ErrorCode.AUTH_INSUFFICIENT_SCOPE, "Platform admin required", status_code=403
+        )
+    return principal

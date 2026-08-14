@@ -41,6 +41,20 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's DI pattern is `Depends(...)` in argument defaults — intentional,
+# not a mutable-default bug (same exemption FastAPI's own ruff config uses).
+# require_permission(...) is likewise a factory evaluated once at import time
+# (permission is fixed per route), not a per-request call.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Body",
+    "app.api.deps.require_permission",
+]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
