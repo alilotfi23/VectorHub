@@ -220,12 +220,19 @@ def test_alertmanager_routes_every_emitted_severity() -> None:
     )
 
 
-def test_alertmanager_credentials_are_env_only() -> None:
-    """Receiver credentials come from ${VAR} expansion, never literals — no
-    webhook URLs, tokens, or keys may be committed."""
+def test_alertmanager_credentials_are_file_based() -> None:
+    """Receiver credentials come from secret files (_file fields), never
+    literals and never ${VAR} expansion (Alertmanager does not expand env vars
+    in config — it would parse the literal and fail to boot). The file paths
+    are the contract the compose/k8s secrets must mount."""
     text = ALERTMANAGER.read_text(encoding="utf-8")
-    assert "${SLACK_WEBHOOK_URL}" in text, "slack receiver must use the env var"
-    assert "${PAGERDUTY_ROUTING_KEY}" in text, "pager receiver must use the env var"
+    assert "api_url_file: /run/secrets/slack_webhook_url" in text, (
+        "slack receiver must read its webhook URL from a secret file"
+    )
+    assert "routing_key_file: /run/secrets/pagerduty_routing_key" in text, (
+        "pager receiver must read its routing key from a secret file"
+    )
+    assert "${SLACK_WEBHOOK_URL}" not in text, "no ${VAR} in the config: it never expands"
     for secret_marker in ("xoxb-", "xoxp-", "hooks.slack.com/services/", "PDKK-"):
         assert secret_marker not in text, f"literal secret marker found: {secret_marker}"
 

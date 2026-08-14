@@ -31,19 +31,27 @@ config (`alertmanager/alertmanager.yml`) routes them: `critical` → PagerDuty,
 `warning` and anything unlabeled → Slack. The Slack receiver posts structured
 attachment fields (alert, severity, summary, value, check, limit) alongside
 the detail text, so the at-a-glance facts are scannable — optional labels
-render a placeholder rather than `<no value>`. Credentials are injected by env
-vars (`SLACK_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY`) — Alertmanager expands
-`${VAR}` at startup, so the config carries no secrets. Mount the config and
-templates:
+render a placeholder rather than `<no value>`. Credentials come from secret
+**files** — the config uses `api_url_file` / `routing_key_file`, because
+Alertmanager does **not** expand `${VAR}` in config (it would parse the
+literal and crash). The compose sources both vars as environment secrets,
+written to `/run/secrets/...` (k8s mounts a Secret at the same paths):
+
+```yaml
+secrets:
+  slack_webhook_url:
+    environment: SLACK_WEBHOOK_URL
+  pagerduty_routing_key:
+    environment: PAGERDUTY_ROUTING_KEY
+```
+
+Mount the config and templates:
 
 ```yaml
 # alertmanager.yml (container mount points)
 volumes:
   - ./deploy/monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
   - ./deploy/monitoring/alertmanager/templates:/etc/alertmanager/templates
-environment:
-  SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
-  PAGERDUTY_ROUTING_KEY: "..."
 ```
 
 The same config also **inhibits** the noisy symptom warnings while a
@@ -96,6 +104,24 @@ percentiles** panel: pick the hot vector-query routes (e.g.
 `/api/v1/collections/{name}/query`, `.../hybrid-query`) to isolate their
 p50/p95/p99 from control-plane traffic (auth, tenants, collection CRUD), or
 select `All` to decompose the global latency panel per route.
+
+## Running the stack
+
+```bash
+cd deploy/monitoring
+# export both vars first — alertmanager refuses to boot without credentials
+export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+export PAGERDUTY_ROUTING_KEY="..."
+docker compose up -d --wait
+#   Prometheus    http://localhost:9090
+#   Alertmanager  http://localhost:9093
+#   Grafana       http://localhost:3000   (admin / admin on first boot)
+```
+
+Prometheus scrapes the platform's admin app at `app:9091` — the service name
+used by the main docker-compose (Phase 8). Running the trio standalone against
+an API on the host? Point `prometheus/prometheus.yml` at
+`host.docker.internal:9091` instead.
 
 ## Threshold rationale (adjust per SLA)
 

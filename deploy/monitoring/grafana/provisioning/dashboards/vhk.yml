@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning.
+# Mounted at /etc/grafana/provisioning/dashboards (read-only) by
+# deploy/monitoring/docker-compose.yml. Loads the VectorHub dashboard from the
+# container path that ./grafana/dashboards is mounted onto.
+apiVersion: 1
+
+providers:
+  - name: vhk
+    folder: VectorHub
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

@@ -4,11 +4,14 @@
 #   critical -> pager (PagerDuty)   — the only rules that drive /health to 503
 #   warning  -> slack (default)     — degraded backends, error spikes, 429 floods
 #
-# Credentials are injected via environment variables — Alertmanager expands
-# ${VAR} references in this file at startup, so no secrets live in the repo.
-# Both must be set in the deployment's environment:
-#   SLACK_WEBHOOK_URL        — incoming-webhook URL for the #platform-alerts channel
-#   PAGERDUTY_ROUTING_KEY    — PagerDuty Events API v2 routing key
+# Credentials are injected via secret FILES, never literals in this repo and
+# never env-var expansion (Alertmanager does NOT expand ${VAR} in config — it
+# parses the literal string, so the deployment must render or mount the real
+# values). The *_file fields below are the Alertmanager-native mechanism:
+#   /run/secrets/slack_webhook_url       — incoming-webhook URL (from SLACK_WEBHOOK_URL)
+#   /run/secrets/pagerduty_routing_key   — PagerDuty Events API v2 routing key
+# docker-compose sources both from environment secrets (see docker-compose.yml);
+# k8s mounts the same paths from a Secret.
 #
 # Reference: https://prometheus.io/docs/alerting/latest/configuration/
 
@@ -36,7 +39,7 @@ route:
 receivers:
   - name: slack
     slack_configs:
-      - api_url: ${SLACK_WEBHOOK_URL}
+      - api_url_file: /run/secrets/slack_webhook_url
         channel: "#platform-alerts"
         title: '{{ template "vhk.title" . }}'
         text: '{{ template "vhk.text" . }}'
@@ -66,7 +69,7 @@ receivers:
 
   - name: pager
     pagerduty_configs:
-      - routing_key: ${PAGERDUTY_ROUTING_KEY}
+      - routing_key_file: /run/secrets/pagerduty_routing_key
         severity: critical
         description: '{{ template "vhk.title" . }}'
 

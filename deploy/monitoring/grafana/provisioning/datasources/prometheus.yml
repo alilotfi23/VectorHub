@@ -1,0 +1,14 @@
+# Grafana datasource provisioning.
+# Mounted at /etc/grafana/provisioning/datasources (read-only) by
+# deploy/monitoring/docker-compose.yml. Provisioning replaces manual
+# datasource setup: the VectorHub dashboard's `datasource` variable resolves
+# against this default Prometheus datasource.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

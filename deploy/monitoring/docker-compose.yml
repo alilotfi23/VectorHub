@@ -1,0 +1,87 @@
+# VectorHub monitoring stack: Prometheus (scrape + alert rules), Alertmanager
+# (severity routing + inhibition), Grafana (provisioned dashboard). Everything
+# mounts the configs shipped in this directory — no copy steps.
+#
+# Run from deploy/monitoring:
+#   docker compose up -d
+#     Prometheus    http://localhost:9090
+#     Alertmanager  http://localhost:9093
+#     Grafana       http://localhost:3000   (admin / admin on first boot)
+#
+# The Prometheus vhk job scrapes the platform's admin app at app:9091 — the
+# service name the main docker-compose (Phase 8) uses. Running this stack
+# standalone against an API on the host? Point prometheus/prometheus.yml at
+# host.docker.internal:9091 instead.
+#
+# Alertmanager requires its credentials to boot: SLACK_WEBHOOK_URL and
+# PAGERDUTY_ROUTING_KEY are written to secret files (compose environment
+# secrets) at /run/secrets/... — the paths the config's *_file fields read.
+# Export them (or put them in a .env next to this file) before `docker compose
+# up`; an unset var fails compose with a clear error instead of crash-looping
+# alertmanager.
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  alertmanager:
+    image: prom/alertmanager:v0.33.1
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/templates:/etc/alertmanager/templates:ro
+    secrets:
+      - slack_webhook_url
+      - pagerduty_routing_key
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9093/api/v2/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+# Environment secrets: compose reads these vars and writes their values to
+# /run/secrets/<name> inside the alertmanager container — the paths its config
+# references. No secret ever appears in a mounted config file.
+secrets:
+  slack_webhook_url:
+    environment: SLACK_WEBHOOK_URL
+  pagerduty_routing_key:
+    environment: PAGERDUTY_ROUTING_KEY
