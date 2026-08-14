@@ -29,10 +29,21 @@ HEALTH_CHECKS_TOTAL = Counter(
     ["check", "status"],
 )
 
+RATE_LIMIT_REJECTIONS_TOTAL = Counter(
+    "vhk_rate_limit_rejections_total",
+    "Rate-limit rejections (429s), labeled by the limit that was hit.",
+    ["limit"],
+)
+
 
 def health_check_outcome(check: str, status: str) -> None:
     """Record one probe result for a dependency check."""
     HEALTH_CHECKS_TOTAL.labels(check=check, status=status).inc()
+
+
+def rate_limit_rejection(limit: str) -> None:
+    """Record one 429, labeled by the limit that rejected the request."""
+    RATE_LIMIT_REJECTIONS_TOTAL.labels(limit=limit).inc()
 
 
 def metrics_response() -> Response:

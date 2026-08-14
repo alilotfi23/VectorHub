@@ -78,3 +78,4 @@ async def test_metrics_counts_rate_limited_requests(
     metrics = await client.get("/metrics")
     assert metrics.status_code == 200
     assert 'vhk_requests_total{method="GET",path="/api/v1/auth/me",status="429"}' in metrics.text
+    assert 'vhk_rate_limit_rejections_total{limit="route_qps"}' in metrics.text

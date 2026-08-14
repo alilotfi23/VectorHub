@@ -9,6 +9,7 @@ from app.api.v1 import api_keys, auth, collections, tenants
 from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, error_response_handler
+from app.core.logging import setup_logging
 from app.core.metrics import metrics_response
 from app.db.session import get_session
 from app.middleware.metrics import MetricsMiddleware
@@ -17,6 +18,8 @@ from app.schemas.health import HealthReport
 from app.services.health_service import check_health
 
 settings = get_settings()
+
+setup_logging()
 
 
 @asynccontextmanager

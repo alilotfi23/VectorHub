@@ -20,6 +20,7 @@ tests override ``get_session`` for routes.
 """
 
 import asyncio
+from dataclasses import dataclass
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -27,6 +28,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.cache import get_redis
 from app.core.exceptions import AppError, ErrorCode, ErrorResponse
+from app.core.logging import get_logger
+from app.core.metrics import rate_limit_rejection
 from app.core.rate_limit import (
     RATE_LIMIT_DB_TIMEOUT_SECONDS,
     RL_KEY_PREFIX,
@@ -43,6 +46,19 @@ from app.db.session import SessionLocal
 from app.services.api_key_service import ApiKeyService
 
 API_KEY_HEADER = "X-API-Key"
+
+logger = get_logger("rate_limit")
+
+
+@dataclass(frozen=True)
+class Rejection:
+    """Which limit rejected the request, for the log line and the counter."""
+
+    kind: LimitKind
+    retry_after: int
+    tenant_id: str | None = None
+    api_key_id: str | None = None
+
 
 # Overridable for tests (see module docstring).
 session_factory = SessionLocal
@@ -71,13 +87,13 @@ class RateLimitMiddleware:
 
         rejected = await _decision(request)
         if rejected is not None:
-            kind, retry_after = rejected
-            await _send_rate_limited(scope, receive, send, kind, retry_after)
+            _record_rejection(request.method, request.url.path, rejected)
+            await _send_rate_limited(scope, receive, send, rejected.kind, rejected.retry_after)
             return
         await self.app(scope, receive, send)
 
 
-async def _decision(request: Request) -> tuple[LimitKind, int] | None:
+async def _decision(request: Request) -> Rejection | None:
     """Consume one token per applicable limit; first rejection wins."""
     redis = get_redis()
 
@@ -87,7 +103,7 @@ async def _decision(request: Request) -> tuple[LimitKind, int] | None:
         redis, f"{RL_ROUTE_PREFIX}{route_key}", route_rate(route_key)
     )
     if not allowed:
-        return "route_qps", retry_after
+        return Rejection("route_qps", retry_after)
 
     auth_header = request.headers.get("Authorization", "")
     api_key = request.headers.get(API_KEY_HEADER)
@@ -119,7 +135,12 @@ async def _decision(request: Request) -> tuple[LimitKind, int] | None:
                         redis, f"{RL_KEY_PREFIX}{principal.api_key_id}", key_rate
                     )
                     if not allowed:
-                        return "api_key_qps", retry_after
+                        return Rejection(
+                            "api_key_qps",
+                            retry_after,
+                            tenant_id=principal.tenant_id,
+                            api_key_id=principal.api_key_id,
+                        )
 
             tenant_rate = await resolve_tenant_rate(redis, session, principal.tenant_id)
             if tenant_rate is not None:
@@ -127,11 +148,31 @@ async def _decision(request: Request) -> tuple[LimitKind, int] | None:
                     redis, f"{RL_TENANT_PREFIX}{principal.tenant_id}", tenant_rate
                 )
                 if not allowed:
-                    return "tenant_qps", retry_after
+                    return Rejection(
+                        "tenant_qps",
+                        retry_after,
+                        tenant_id=principal.tenant_id,
+                        api_key_id=principal.api_key_id,
+                    )
     except Exception:
         # Fail open: config/DB errors must never break the API.
         return None
     return None
+
+
+def _record_rejection(method: str, path: str, rejection: Rejection) -> None:
+    """Make the rejection observable: a counter plus a structured log line
+    naming the limit hit. No secrets — only ids and the request's method/path."""
+    rate_limit_rejection(rejection.kind)
+    logger.warning(
+        "rate_limit_exceeded",
+        limit=rejection.kind,
+        retry_after=rejection.retry_after,
+        method=method,
+        path=path,
+        tenant_id=rejection.tenant_id,
+        api_key_id=rejection.api_key_id,
+    )
 
 
 async def _send_rate_limited(
