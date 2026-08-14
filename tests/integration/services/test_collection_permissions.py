@@ -185,3 +185,63 @@ async def test_grant_is_audited(db: AsyncSession) -> None:
     assert row is not None
     assert row.actor_id == owner.user_id
     assert row.details == {"user_id": owner.user_id, "role": "editor"}
+
+
+async def test_revoke_permission_removes_grant(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    _, viewer = await _add_viewer_member(db, owner)
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    await svc.grant_permission(
+        owner, name=collection.name, user_id=viewer.user_id or "", role="editor"
+    )
+    assert await svc.check_access(viewer, Permission.COLLECTION_WRITE, name=collection.name)
+
+    await svc.revoke_permission(owner, name=collection.name, user_id=viewer.user_id or "")
+
+    # Grant gone: write checks fail again, read still passes (tenant role).
+    with pytest.raises(AppError) as exc:
+        await svc.check_access(viewer, Permission.COLLECTION_WRITE, name=collection.name)
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+    assert await svc.check_access(viewer, Permission.COLLECTION_READ, name=collection.name)
+
+    # Revocation is audited.
+    row = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "collection.permission.revoked",
+            AuditLog.resource_id == collection.id,
+        )
+    )
+    assert row is not None
+    assert row.details == {"user_id": viewer.user_id}
+
+
+async def test_revoke_permission_is_idempotent(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    svc = CollectionService(db)
+    # Revoking a grant that never existed (or was already revoked) is a no-op.
+    await svc.revoke_permission(owner, name=collection.name, user_id=owner.user_id or "")
+    await svc.revoke_permission(owner, name=collection.name, user_id=owner.user_id or "")
+
+
+async def test_revoke_permission_foreign_collection(db: AsyncSession) -> None:
+    _, owner_a = await _register(db, "orga")
+    _, owner_b = await _register(db, "orgb")
+    await _add_collection(db, owner_b.tenant_id, name="shared")
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).revoke_permission(
+            owner_a, name="shared", user_id=owner_a.user_id or ""
+        )
+    assert exc.value.code == ErrorCode.COLLECTION_NOT_FOUND
+
+
+async def test_revoke_permission_requires_manage(db: AsyncSession) -> None:
+    _, owner = await _register(db, "org")
+    collection = await _add_collection(db, owner.tenant_id)
+    editor = Principal(user_id=owner.user_id, tenant_id=owner.tenant_id, role="editor")
+    with pytest.raises(AppError) as exc:
+        await CollectionService(db).revoke_permission(
+            editor, name=collection.name, user_id=owner.user_id or ""
+        )
+    assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE

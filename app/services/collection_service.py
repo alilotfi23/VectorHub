@@ -138,3 +138,34 @@ class CollectionService:
         # may hold the pre-update role — reload before returning.
         await self._session.refresh(row)
         return row
+
+    async def revoke_permission(self, actor: Principal, *, name: str, user_id: str) -> None:
+        """Remove a user's resource-level grant on a collection.
+
+        Same manage gate as grant_permission (no rank guard needed — deleting
+        can't escalate). Idempotent: revoking a grant that doesn't exist is a
+        no-op, per REST DELETE semantics. Audited only when a row is actually
+        removed.
+        """
+        collection = await self.get_collection(actor, name=name)
+        actor_grant = await self.get_permission_grant(collection.id, actor.user_id or "")
+        grant_role = actor_grant.permission if actor_grant else None
+        if not resolve_permission(actor, Permission.TENANT_MANAGE, collection_grant=grant_role):
+            raise AppError(
+                ErrorCode.AUTH_INSUFFICIENT_SCOPE,
+                "Admin or owner role required to manage grants",
+                status_code=403,
+            )
+        grant = await self.get_permission_grant(collection.id, user_id)
+        if grant is None:
+            return
+        await self._session.delete(grant)
+        await self._audit.record(
+            tenant_id=collection.tenant_id,
+            actor_id=actor.user_id,
+            action="collection.permission.revoked",
+            resource_type="collection",
+            resource_id=collection.id,
+            details={"user_id": user_id},
+        )
+        await self._session.commit()

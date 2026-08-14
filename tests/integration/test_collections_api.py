@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission as Perm
 from app.core.security import Principal
 from app.db.models import Collection
@@ -133,6 +134,70 @@ async def test_collection_permissions_route(
         f"{API}/collections/products/permissions",
         json={"user_id": member["id"], "role": "viewer"},
         headers=foreign_headers,
+    )
+    assert foreign.status_code == 404
+    assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"
+
+
+async def test_revoke_collection_permission_route(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    reg = await _register(client)
+    headers = _auth_headers(reg["access_token"])
+    tenant_id = reg["user"]["tenant_id"]
+
+    member_resp = await client.post(
+        f"{API}/tenants/{tenant_id}/members",
+        json={"email": _unique_email("revoke-viewer"), "password": "password-123"},
+        headers=headers,
+    )
+    assert member_resp.status_code == 201
+    member = member_resp.json()
+
+    async with session_factory() as session:
+        collection = Collection(
+            tenant_id=tenant_id,
+            name="products",
+            backend="chroma",
+            dimension=8,
+            distance_metric="cosine",
+            physical_name=f"col_{uuid.uuid4().hex[:12]}",
+        )
+        session.add(collection)
+        await session.commit()
+
+    granted = await client.patch(
+        f"{API}/collections/products/permissions",
+        json={"user_id": member["id"], "role": "editor"},
+        headers=headers,
+    )
+    assert granted.status_code == 200
+
+    revoked = await client.delete(
+        f"{API}/collections/products/permissions/{member['id']}", headers=headers
+    )
+    assert revoked.status_code == 204
+
+    # Grant is gone: collection-scoped write checks fail for the member again.
+    async with session_factory() as session:
+        principal = Principal(user_id=member["id"], tenant_id=tenant_id, role="viewer")
+        with pytest.raises(AppError) as exc:
+            await CollectionService(session).check_access(
+                principal, Perm.COLLECTION_WRITE, name="products"
+            )
+        assert exc.value.code == ErrorCode.AUTH_INSUFFICIENT_SCOPE
+
+    # Idempotent: revoking again is a 204, not an error.
+    again = await client.delete(
+        f"{API}/collections/products/permissions/{member['id']}", headers=headers
+    )
+    assert again.status_code == 204
+
+    # Cross-tenant revoke: no existence oracle.
+    other = await _register(client, "other")
+    foreign_headers = _auth_headers(other["access_token"])
+    foreign = await client.delete(
+        f"{API}/collections/products/permissions/{member['id']}", headers=foreign_headers
     )
     assert foreign.status_code == 404
     assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"

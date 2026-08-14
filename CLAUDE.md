@@ -107,6 +107,7 @@ GET    /api/v1/collections
 GET    /api/v1/collections/{name}
 DELETE /api/v1/collections/{name}
 PATCH  /api/v1/collections/{name}/permissions   # RBAC grants on this collection
+DELETE /api/v1/collections/{name}/permissions/{user_id}   # revoke a user's resource-level grant (admin/owner; idempotent)
 PATCH  /api/v1/collections/{name}/config        # mutate index config post-creation (HNSW params, etc. — see note below)
 
 POST   /api/v1/collections/{name}/vectors                 # upsert (single/batch), accepts pre-computed vectors
