@@ -19,7 +19,17 @@ from app.schemas.auth import (
     RegisterRequest,
     TenantCreateRequest,
 )
-from app.schemas.collections import CollectionPermissionUpdateRequest
+from app.schemas.collections import (
+    CollectionConfigUpdateRequest,
+    CollectionCreateRequest,
+    CollectionPermissionUpdateRequest,
+)
+from app.schemas.vectors import (
+    RESERVED_METADATA_PREFIX,
+    QueryRequest,
+    VectorRecordIn,
+    VectorUpsertRequest,
+)
 
 REQUEST_SCHEMAS: list[type[BaseModel]] = [
     RegisterRequest,
@@ -31,6 +41,10 @@ REQUEST_SCHEMAS: list[type[BaseModel]] = [
     MemberCreateRequest,
     MemberRoleUpdateRequest,
     CollectionPermissionUpdateRequest,
+    CollectionCreateRequest,
+    CollectionConfigUpdateRequest,
+    VectorUpsertRequest,
+    QueryRequest,
 ]
 
 
@@ -51,6 +65,19 @@ def _valid_payload(schema: type[BaseModel]) -> dict[str, Any]:
         return {"role": "editor"}
     if schema is CollectionPermissionUpdateRequest:
         return {"user_id": "u-1", "role": "viewer"}
+    if schema is CollectionCreateRequest:
+        return {
+            "name": "products",
+            "backend": "chroma",
+            "dimension": 8,
+            "distance_metric": "cosine",
+        }
+    if schema is CollectionConfigUpdateRequest:
+        return {"index_config": {"m": 16}}
+    if schema is VectorUpsertRequest:
+        return {"vectors": [{"id": "doc-1", "vector": [0.1, 0.2]}]}
+    if schema is QueryRequest:
+        return {"vector": [0.1, 0.2], "top_k": 5}
     raise AssertionError(f"unhandled schema: {schema}")
 
 
@@ -72,3 +99,36 @@ def test_request_schemas_reject_forged_fields(schema: type[BaseModel]) -> None:
     for forged in forged_fields:
         with pytest.raises(ValidationError):
             schema.model_validate({**base, forged: "forged-value"})
+
+
+def test_query_filter_shape_validation() -> None:
+    """The normalized filter subset rejects unknown operators and malformed
+    nesting while accepting the documented shapes (equality shorthand,
+    comparison operators, $and/$or/$not)."""
+    QueryRequest(vector=[0.1], filters={"status": "active"})  # equality shorthand
+    QueryRequest(vector=[0.1], filters={"price": {"$gt": 5, "$lt": 10}})
+    QueryRequest(
+        vector=[0.1], filters={"$and": [{"a": 1}, {"$or": [{"b": {"$in": [1, 2]}}, {"c": "x"}]}]}
+    )
+    QueryRequest(vector=[0.1], filters={"$not": {"tag": "x"}})
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], filters={"$bogus": 1})
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], filters={"field": {"$bogus": 1}})
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], filters={"$and": []})
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], filters={"field": [1, 2]})  # list is not a value form
+    with pytest.raises(ValidationError):
+        QueryRequest(vector=[0.1], filters={"tags": {"$in": "not-a-list"}})
+
+
+def test_vector_metadata_reserved_prefix_rejected() -> None:
+    """The _vhk_ prefix is reserved for the platform's internal storage keys
+    (Chroma folds timestamps/tenant into metadata) — user payloads must not
+    collide with it."""
+    with pytest.raises(ValidationError):
+        VectorRecordIn(
+            id="doc-1", vector=[0.1], metadata={f"{RESERVED_METADATA_PREFIX}created_at": "x"}
+        )
+    VectorRecordIn(id="doc-1", vector=[0.1], metadata={"regular": "fine"})

@@ -60,8 +60,11 @@ async def _clear_heartbeats() -> None:
         await redis.delete(key)
 
 
-async def test_health_ok_all_dependencies(client: AsyncClient, redis_url: str) -> None:
-    """Happy path: Postgres + Redis up, a live worker heartbeat -> 200 'ok'."""
+async def test_health_ok_all_dependencies(
+    client: AsyncClient, redis_url: str, chroma_backend: None
+) -> None:
+    """Happy path: Postgres + Redis up, a live worker heartbeat, chroma
+    registered and healthy -> 200 'ok'."""
     await _write_heartbeat()
     try:
         resp = await client.get("/health")
@@ -73,7 +76,7 @@ async def test_health_ok_all_dependencies(client: AsyncClient, redis_url: str) -
     assert body["checks"]["postgres"] == "ok"
     assert body["checks"]["redis"] == "ok"
     assert body["checks"]["workers"] == "ok"
-    assert body["checks"]["adapters"] == {}
+    assert body["checks"]["adapters"] == {"chroma": "ok"}
 
 
 async def test_worker_heartbeat_writer_feeds_workers_check(
@@ -124,9 +127,12 @@ async def test_health_degraded_with_stale_worker_heartbeat(
     assert resp.json()["checks"]["workers"] == "down"
 
 
-async def test_health_reports_adapter_status(client: AsyncClient, redis_url: str) -> None:
+async def test_health_reports_adapter_status(
+    client: AsyncClient, redis_url: str, chroma_backend: None
+) -> None:
     """Per-backend status flows into the probe; a broken backend degrades
-    (non-critical) rather than failing the probe."""
+    (non-critical) rather than failing the probe. The registered built-in
+    (chroma, healthy here) joins the map."""
     await _clear_heartbeats()
     registry.register("good", _HealthyAdapter())
     registry.register("broken", _BrokenAdapter())
@@ -138,7 +144,7 @@ async def test_health_reports_adapter_status(client: AsyncClient, redis_url: str
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["adapters"] == {"broken": "down", "good": "ok"}
+    assert body["checks"]["adapters"] == {"broken": "down", "chroma": "ok", "good": "ok"}
 
 
 async def test_health_down_when_postgres_unreachable(client: AsyncClient) -> None:

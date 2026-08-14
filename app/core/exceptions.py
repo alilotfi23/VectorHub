@@ -49,6 +49,13 @@ class ErrorCode(StrEnum):
     # VALIDATION_*
     VALIDATION_UNSUPPORTED_OPERATION = "VALIDATION_UNSUPPORTED_OPERATION"
     VALIDATION_INVALID_CURSOR = "VALIDATION_INVALID_CURSOR"
+    # Generic Pydantic validation failure not covered by a more specific code
+    # above (the RequestValidationError handler's fallback).
+    VALIDATION_GENERIC = "VALIDATION_GENERIC"
+    # Metadata filter rejected by the backend (shape is schema-validated; this
+    # covers backend-specific semantics, e.g. an operator applied to a
+    # non-comparable field on Chroma).
+    VALIDATION_INVALID_FILTER = "VALIDATION_INVALID_FILTER"
 
 
 class ErrorResponse(BaseModel):

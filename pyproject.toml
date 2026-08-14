@@ -21,6 +21,7 @@ dependencies = [
     "opentelemetry-sdk>=1.24",
     "opentelemetry-exporter-otlp-proto-http>=1.24",
     "arq>=0.28.0",
+    "chromadb>=1.5.9",
 ]
 
 [dependency-groups]
@@ -88,3 +89,6 @@ asyncio_mode = "auto"
 asyncio_default_test_loop_scope = "session"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+# 100k-vector ingest soak — validates the Chroma throughput floor (~10-30 s
+# per the batch-throughput design); runs in the adapter testcontainers job.
+markers = ["soak: 100k-vector adapter ingest soak (throughput floor)"]
