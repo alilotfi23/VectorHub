@@ -74,22 +74,63 @@ def test_console_renderer_is_default() -> None:
         setup_logging()
 
 
-def test_request_access_log_emits_method_path_status(
+class _StubLogger:
+    """Records every call as (level, event, kwargs) for deterministic asserts."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    def info(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("info", event, kwargs))
+
+    def warning(self, event: str, **kwargs: Any) -> None:
+        self.calls.append(("warning", event, kwargs))
+
+
+def test_request_access_log_emits_method_path_status_duration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every request records one INFO line naming method, templated path, and
-    status — through the middleware's _record_request."""
-    captured: dict[str, Any] = {}
+    """Every request records one INFO line naming method, templated path,
+    status, and duration_ms (with slow=false) — through the middleware's
+    _record_request."""
+    stub = _StubLogger()
+    monkeypatch.setattr(metrics_module, "logger", stub)
+    _record_request(
+        "GET", "/api/v1/collections/{name}", 200, duration_ms=25, slow_threshold_ms=1000
+    )
 
-    class StubLogger:
-        def info(self, event: str, **kwargs: Any) -> None:
-            captured["event"] = event
-            captured.update(kwargs)
+    assert len(stub.calls) == 1
+    level, event, fields = stub.calls[0]
+    assert level == "info"
+    assert event == "request_completed"
+    assert fields == {
+        "method": "GET",
+        "path": "/api/v1/collections/{name}",
+        "status": 200,
+        "duration_ms": 25,
+        "slow": False,
+    }
 
-    monkeypatch.setattr(metrics_module, "logger", StubLogger())
-    _record_request("GET", "/api/v1/collections/{name}", 200)
 
-    assert captured["event"] == "request_completed"
-    assert captured["method"] == "GET"
-    assert captured["path"] == "/api/v1/collections/{name}"
-    assert captured["status"] == 200
+def test_slow_request_logs_warning_with_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request at or above the threshold logs the same event at WARNING with
+    slow=true, so latency outliers surface in the log stream."""
+    stub = _StubLogger()
+    monkeypatch.setattr(metrics_module, "logger", stub)
+    _record_request(
+        "POST", "/api/v1/collections/{name}/query", 200, duration_ms=1500, slow_threshold_ms=1000
+    )
+
+    assert len(stub.calls) == 1
+    level, event, fields = stub.calls[0]
+    assert level == "warning"
+    assert event == "request_completed"
+    assert fields == {
+        "method": "POST",
+        "path": "/api/v1/collections/{name}/query",
+        "status": 200,
+        "duration_ms": 1500,
+        "slow": True,
+    }

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Structured log rendering: "console" (human-readable, dev default) or
     # "json" (one JSON object per line — set LOG_FORMAT=json in staging/prod).
     log_format: str = "console"
+    # Requests slower than this (ms) log their request_completed access line at
+    # WARNING with slow=true, so latency outliers surface in the log stream
+    # without a separate alerting pipeline.
+    slow_request_threshold_ms: int = 1000
 
     # --- Serving (app.main:run — one process, two apps) ---
     # Public API: the /api/v1 surface. It exposes NO /health or /metrics.
