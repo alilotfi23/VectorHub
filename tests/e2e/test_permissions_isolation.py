@@ -115,6 +115,48 @@ async def _provision_member(
     return cast(dict[str, Any], resp.json())
 
 
+async def _no_oracle_404(
+    client: AsyncClient,
+    method: str,
+    path: str,
+    headers: dict[str, str],
+    *,
+    expected: str,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fire one cross-tenant no-oracle probe: assert the fail-closed 404
+    with the expected error_code and return the body so callers can compare
+    probes byte-for-byte. Every isolation 404 assertion flows through here,
+    so the suite's no-oracle discipline is enforced in one place."""
+    resp = await client.request(method, path, json=body, headers=headers)
+    assert resp.status_code == 404, f"{method} {path}: {resp.status_code} {resp.text}"
+    assert resp.json()["error_code"] == expected
+    return cast(dict[str, Any], resp.json())
+
+
+async def _assert_no_existence_oracle(
+    client: AsyncClient,
+    *,
+    method: str,
+    real_path: str,
+    missing_path: str,
+    headers: dict[str, str],
+    expected: str,
+    body: dict[str, Any] | None = None,
+) -> None:
+    """Prove responses can't act as an existence oracle: a probe of a target
+    that exists in another tenant and a probe of a target that exists nowhere
+    must be byte-identical fail-closed 404s with the expected error_code.
+    Byte-identity is enforced by construction — both probes flow through
+    _no_oracle_404 and their bodies are compared here, so no caller can
+    forget the comparison."""
+    real = await _no_oracle_404(client, method, real_path, headers, expected=expected, body=body)
+    missing = await _no_oracle_404(
+        client, method, missing_path, headers, expected=expected, body=body
+    )
+    assert real == missing
+
+
 @pytest.mark.parametrize("auth", AUTH_STYLES)
 async def test_e1_same_name_collision_grants_invisible_across_tenants(
     client: AsyncClient, session_factory: async_sessionmaker[AsyncSession], auth: str
@@ -194,19 +236,18 @@ async def test_e2_cross_tenant_ops_not_found_and_do_not_touch_data(
     assert granted.status_code == 200
 
     # B's GET, PATCH, and DELETE on A's collection: all COLLECTION_NOT_FOUND.
-    for method, path in (
-        ("GET", f"{API}/collections/a-only/permissions"),
-        ("PATCH", f"{API}/collections/a-only/permissions"),
-        ("DELETE", f"{API}/collections/a-only/permissions/{member_a['id']}"),
+    for method, path, body in (
+        ("GET", f"{API}/collections/a-only/permissions", None),
+        (
+            "PATCH",
+            f"{API}/collections/a-only/permissions",
+            {"user_id": member_a["id"], "role": "viewer"},
+        ),
+        ("DELETE", f"{API}/collections/a-only/permissions/{member_a['id']}", None),
     ):
-        if method == "PATCH":
-            resp = await client.patch(
-                path, json={"user_id": member_a["id"], "role": "viewer"}, headers=headers_b
-            )
-        else:
-            resp = await getattr(client, method.lower())(path, headers=headers_b)
-        assert resp.status_code == 404, f"{method} {path}: {resp.status_code} {resp.text}"
-        assert resp.json()["error_code"] == "COLLECTION_NOT_FOUND"
+        await _no_oracle_404(
+            client, method, path, headers_b, expected="COLLECTION_NOT_FOUND", body=body
+        )
 
     # A's grant survives every cross-tenant attempt.
     a_list = await client.get(f"{API}/collections/a-only/permissions", headers=headers_a)
@@ -258,16 +299,16 @@ async def test_e8_negative_control_no_existence_oracle(
 
     await _seed_collection(session_factory, tenant_a, "products")
 
-    exists_elsewhere = await client.get(
-        f"{API}/collections/products/permissions", headers=headers_c
+    # A name that exists in another tenant and a name that exists nowhere:
+    # byte-identical 404s by construction (see _assert_no_existence_oracle).
+    await _assert_no_existence_oracle(
+        client,
+        method="GET",
+        real_path=f"{API}/collections/products/permissions",
+        missing_path=f"{API}/collections/{uuid.uuid4().hex}/permissions",
+        headers=headers_c,
+        expected="COLLECTION_NOT_FOUND",
     )
-    missing_everywhere = await client.get(
-        f"{API}/collections/{uuid.uuid4().hex}/permissions", headers=headers_c
-    )
-    assert exists_elsewhere.status_code == 404
-    assert missing_everywhere.status_code == 404
-    # Byte-identical error bodies: no existence oracle.
-    assert exists_elsewhere.json() == missing_everywhere.json()
 
     # And A, for whom the collection genuinely exists, sees grants fine.
     a_list = await client.get(f"{API}/collections/products/permissions", headers=headers_a)
@@ -302,9 +343,13 @@ async def test_forged_tenant_id_in_path_cannot_reach_foreign_members(
     assert promoted.json()["role"] == "editor"
 
     # B's read of A's member directory (the grant state): 404, no oracle.
-    foreign_list = await client.get(f"{API}/tenants/{tenant_a}/members", headers=headers_b)
-    assert foreign_list.status_code == 404
-    assert foreign_list.json()["error_code"] == "TENANT_NOT_FOUND"
+    await _no_oracle_404(
+        client,
+        "GET",
+        f"{API}/tenants/{tenant_a}/members",
+        headers_b,
+        expected="TENANT_NOT_FOUND",
+    )
 
     # B forges A's tenant id in the path: every write op 404s too.
     for method, path, body in (
@@ -320,14 +365,20 @@ async def test_forged_tenant_id_in_path_cannot_reach_foreign_members(
         ),
         ("GET", f"{API}/tenants/{tenant_a}", None),
     ):
-        resp = await client.request(method, path, json=body, headers=headers_b)
-        assert resp.status_code == 404, f"{method} {path}: {resp.status_code} {resp.text}"
-        assert resp.json()["error_code"] == "TENANT_NOT_FOUND"
+        await _no_oracle_404(
+            client, method, path, headers_b, expected="TENANT_NOT_FOUND", body=body
+        )
 
-    # Byte-identical to a nonexistent tenant id: no existence oracle.
-    missing = await client.get(f"{API}/tenants/{uuid.uuid4().hex}/members", headers=headers_b)
-    assert missing.status_code == 404
-    assert missing.json() == foreign_list.json()
+    # Byte-identical to a nonexistent tenant id: no existence oracle (probed
+    # fresh after the writes, so the failures are stable post-attempt).
+    await _assert_no_existence_oracle(
+        client,
+        method="GET",
+        real_path=f"{API}/tenants/{tenant_a}/members",
+        missing_path=f"{API}/tenants/{uuid.uuid4().hex}/members",
+        headers=headers_b,
+        expected="TENANT_NOT_FOUND",
+    )
 
     # A's roles survive untouched: still the owner and the editor member.
     a_list = await client.get(f"{API}/tenants/{tenant_a}/members", headers=headers_a)
