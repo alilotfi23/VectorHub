@@ -398,3 +398,45 @@ async def test_killed_key_loses_all_access_immediately(
     # Repeated presentation stays dead — no revivification window.
     again = await client.get(f"{API}/collections/a-only/permissions", headers=key_headers)
     assert again.status_code == 401
+
+
+async def test_revoked_key_loses_tenant_role_immediately(
+    client: AsyncClient, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Revocation kills the key's tenant role at the authentication gate,
+    with no timing window: the request immediately after the revoke 204 —
+    on a read surface that ANY tenant role, even viewer, would pass — is
+    401. The role is gone entirely, not degraded, and never reaches the
+    resolve-once gates again."""
+    reg = await _register(client, "org")
+    tenant_id = reg["user"]["tenant_id"]
+    await _seed_collection(session_factory, tenant_id, "own")
+    headers = _auth_headers(reg["access_token"])
+
+    created = await client.post(
+        f"{API}/api-keys",
+        json={"name": f"iso-{uuid.uuid4().hex[:10]}", "role": "owner"},
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    key_headers = {"X-API-Key": body["key"]}
+
+    # Live: the owner role passes the resolve-once gates on both surfaces —
+    # the tenant read (any role passes) and the manage-gated grant list.
+    read = await client.get(f"{API}/tenants/{tenant_id}", headers=key_headers)
+    assert read.status_code == 200
+    grants = await client.get(f"{API}/collections/own/permissions", headers=key_headers)
+    assert grants.status_code == 200
+
+    revoked = await client.delete(f"{API}/api-keys/{body['id']}", headers=headers)
+    assert revoked.status_code == 204
+
+    # The very next request is 401 even on the read surface a viewer would
+    # pass — the role is gone entirely at authentication, before any
+    # resolve-once gate can consult it.
+    read_after = await client.get(f"{API}/tenants/{tenant_id}", headers=key_headers)
+    assert read_after.status_code == 401
+    assert read_after.json()["error_code"] == "AUTH_INVALID_CREDENTIALS"
+    grants_after = await client.get(f"{API}/collections/own/permissions", headers=key_headers)
+    assert grants_after.status_code == 401

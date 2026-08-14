@@ -6,10 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.rbac import Permission
 from app.core.security import Principal, hash_api_key
-from app.db.models import ApiKey, AuditLog, User
+from app.db.models import ApiKey, AuditLog, Collection, User
 from app.services.api_key_service import ApiKeyService
 from app.services.auth_service import AuthService
+from app.services.collection_service import CollectionService
 
 
 def _unique(prefix: str) -> str:
@@ -189,3 +191,47 @@ async def test_key_death_is_immediate_and_a_property_of_the_key(db: AsyncSession
     stored = await db.get(ApiKey, doomed.id)
     assert stored is not None and stored.revoked is True
     assert await svc.authenticate(doomed_plaintext) is None
+
+
+async def test_revoked_key_role_unreachable_through_resolve_once_gates(db: AsyncSession) -> None:
+    """The resolve-once gates trust the principal's role and never re-check
+    the credential, so revocation must be — and is — enforced at the
+    derivation boundary. Compositional proof: revocation flips only the
+    revoked flag (the role row is untouched, so the gates would still pass
+    with a stale principal), yet the principal can no longer be derived —
+    the flag, not the role, is the enforcement point, and the gates have no
+    window in which to consult a dead key's tenant role."""
+    _, owner = await _owner(db)
+    collection = Collection(
+        tenant_id=owner.tenant_id,
+        name="products",
+        backend="chroma",
+        dimension=8,
+        distance_metric="cosine",
+        physical_name=f"col_{uuid.uuid4().hex[:12]}",
+    )
+    db.add(collection)
+    await db.commit()
+    svc = CollectionService(db)
+
+    key, plaintext = await ApiKeyService(db).create_key(owner, name="role-key", role="owner")
+
+    # Live: the owner role passes the resolve-once manage gate, and keys
+    # never hold resource grants — the tenant role is all there is.
+    principal = await ApiKeyService(db).authenticate(plaintext)
+    assert principal is not None
+    access = await svc.check_access(principal, Permission.TENANT_MANAGE, name=collection.name)
+    assert access.actor_grant is None
+
+    # Revoke: only the flag flips — the role is unchanged in the DB, so a
+    # stale principal would still sail through the gates.
+    assert key.role == "owner"
+    await ApiKeyService(db).revoke_key(owner, key_id=key.id)
+    stored = await db.get(ApiKey, key.id)
+    assert stored is not None
+    assert stored.revoked is True and stored.role == "owner"
+
+    # The derivation is the enforcement point: it returns None, so no stale
+    # principal exists for the gates to resolve with — the timing gap is
+    # closed at the only boundary it can be closed at.
+    assert await ApiKeyService(db).authenticate(plaintext) is None
