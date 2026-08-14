@@ -44,6 +44,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32), default="viewer")  # owner|admin|editor|viewer
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -58,6 +59,7 @@ class ApiKey(Base):
     name: Mapped[str] = mapped_column(String(255))
     key_hash: Mapped[str] = mapped_column(String(255))  # hashed at rest
     prefix: Mapped[str] = mapped_column(String(32))  # display-only
+    role: Mapped[str] = mapped_column(String(32), default="editor")  # owner|admin|editor|viewer
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     rate_limit_qps: Mapped[int | None] = mapped_column(Integer, nullable=True)
