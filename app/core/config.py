@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +11,29 @@ class Settings(BaseSettings):
 
     app_name: str = "vectorhub-platform"
     environment: str = "dev"
+
+    # --- Auth / JWT (Phase 2) ---
+    # HS256 with a strong secret. The dev default is a trap: prod refuses to
+    # boot with it (see validator below). Generate with `openssl rand -hex 32`.
+    jwt_secret: str = "dev-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_access_ttl_minutes: int = 15
+    jwt_refresh_ttl_days: int = 30
+    # Comma-separated emails granted is_platform_admin at registration time.
+    # Set before the first register in a new deployment; empty in dev means
+    # no platform admin exists (POST /tenants stays admin-gated).
+    bootstrap_platform_admin_emails: str = ""
+
+    @model_validator(mode="after")
+    def _prod_needs_real_secret(self) -> "Settings":
+        if self.environment in {"staging", "prod"} and self.jwt_secret == "dev-secret-change-me":
+            raise ValueError("JWT_SECRET must be set to a real secret in staging/prod")
+        return self
+
+    @property
+    def platform_admin_emails(self) -> set[str]:
+        emails = (e.strip().lower() for e in self.bootstrap_platform_admin_emails.split(","))
+        return {e for e in emails if e}
 
     # Postgres. The runtime app connects as the `app` role; Alembic migrations
     # run as the `migrator` role (holds DDL, sees the audit_log guard trigger).
