@@ -144,6 +144,49 @@ def test_dashboard_parses_with_datasource_variable() -> None:
     assert len(ids) == len(set(ids)), "panel ids must be unique"
 
 
+def test_dashboard_has_per_route_latency_panel() -> None:
+    """Hot vector-query routes must be isolatable from control-plane traffic:
+    a 'route' variable (multi-select, includeAll, populated from the
+    instrumentator's handler label) feeds a per-handler latency panel via
+    handler=~"$route" — the isolation knob the global latency panel lacks."""
+    with DASHBOARD.open(encoding="utf-8") as f:
+        dash = json.load(f)
+
+    variables = {v["name"]: v for v in dash["templating"]["list"]}
+    route_var = variables.get("route")
+    assert route_var is not None, "dashboard needs the 'route' variable"
+    assert route_var["type"] == "query"
+    assert route_var["multi"] is True, "route variable must allow multi-select"
+    assert route_var["includeAll"] is True, "route variable must allow 'All'"
+    assert route_var["allValue"] == ".*", "All must expand to a match-all regex"
+    query = route_var["query"]
+    if isinstance(query, dict):
+        query = query["query"]
+    assert query.startswith("label_values("), "route variable must be label_values-driven"
+    assert "http_request_duration_highr_seconds_bucket" in query, (
+        "route variable must list the latency histogram's handler label"
+    )
+
+    latency = [p for p in dash["panels"] if "Route latency" in p["title"]]
+    assert len(latency) == 1, "exactly one per-route latency panel"
+    panel = latency[0]
+    assert panel["type"] == "timeseries"
+    assert panel["gridPos"]["w"] == 12
+    quantiles = set()
+    for target in panel["targets"]:
+        assert 'handler=~"$route"' in target["expr"], (
+            f"target {target['refId']} must filter by $route"
+        )
+        assert "by (le, handler)" in target["expr"], (
+            f"target {target['refId']} must break percentiles down per handler"
+        )
+        quantiles.add(target["legendFormat"])
+        _assert_known_metrics(target["expr"])
+    assert quantiles == {"{{handler}} p50", "{{handler}} p95", "{{handler}} p99"}, (
+        f"panel must plot p50/p95/p99 per handler, got {quantiles}"
+    )
+
+
 def _load_alertmanager() -> dict[str, Any]:
     with ALERTMANAGER.open(encoding="utf-8") as f:
         doc = yaml.safe_load(f)

@@ -10,7 +10,7 @@ Alert rules and a Grafana dashboard for the metrics exposed by
 | `prometheus/alerts.yml` | Prometheus alert rules for the `vhk_*` + `http_*` metric families |
 | `alertmanager/alertmanager.yml` | Alertmanager routing: `critical` → pager (PagerDuty), `warning`/default → Slack, env-driven credentials |
 | `alertmanager/templates/vhk.tmpl` | Notification title/text templates referenced by the Alertmanager config |
-| `grafana/dashboards/platform.json` | Dashboard: request rate by status, error rate, latency percentiles, per-dependency health failures, rate-limit rejections, 429 rate, response size |
+| `grafana/dashboards/platform.json` | Dashboard: request rate by status, error rate, latency percentiles, per-dependency health failures, rate-limit rejections, 429 rate, response size, per-route latency |
 
 Validate with the bundled unit test (`tests/unit/test_monitoring_config.py`),
 which parses both files and pins their structure — `promtool check rules` and
@@ -76,7 +76,13 @@ providers:
 ```
 
 The dashboard takes a `datasource` variable (default: the first Prometheus
-datasource) so the same JSON works across environments.
+datasource) so the same JSON works across environments. A second variable,
+`route`, lists every templated handler (from the latency histogram's `handler`
+label) and is multi-select with an `All` option. It drives the **Route latency
+percentiles** panel: pick the hot vector-query routes (e.g.
+`/api/v1/collections/{name}/query`, `.../hybrid-query`) to isolate their
+p50/p95/p99 from control-plane traffic (auth, tenants, collection CRUD), or
+select `All` to decompose the global latency panel per route.
 
 ## Threshold rationale (adjust per SLA)
 
