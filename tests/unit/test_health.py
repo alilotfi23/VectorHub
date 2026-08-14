@@ -46,6 +46,33 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
     assert body["checks"]["adapters"] == {}
 
 
+async def test_health_probe_emits_structured_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every check outcome records one health_probe line (check, status,
+    duration_ms) so probe outcomes join the same structured stream as the
+    request logs — 429s and probe outcomes traceable in one place. The admin
+    app has no middleware, so these lines carry no request_id; correlation is
+    by check + timestamp."""
+    captured: dict[str, Any] = {}
+
+    class StubLogger:
+        def info(self, event: str, **kwargs: Any) -> None:
+            captured["event"] = event
+            captured.update(kwargs)
+
+    monkeypatch.setattr(health_service, "logger", StubLogger())
+
+    async def _ok() -> health_service.CheckStatus:
+        return "ok"
+
+    status = await health_service._probe("postgres", _ok())
+
+    assert status == "ok"
+    assert captured["event"] == "health_probe"
+    assert captured["check"] == "postgres"
+    assert captured["status"] == "ok"
+    assert captured["duration_ms"] >= 0
+
+
 def test_cors_default_permissive() -> None:
     """CORS lives on the public app only (the admin app has no middleware)."""
     resp = public_client.options(

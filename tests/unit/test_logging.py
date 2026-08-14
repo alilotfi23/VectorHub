@@ -134,3 +134,43 @@ def test_slow_request_logs_warning_with_duration(
         "duration_ms": 1500,
         "slow": True,
     }
+
+
+def test_request_id_flows_into_json_lines_via_contextvars() -> None:
+    """With LOG_FORMAT=json and the tracing middleware's contextvars bound
+    (request_id + trace_id), every line emitted during the request — the
+    rate-limit 429 line and the access-log line included — carries the same
+    request ID. That is the "traceable in one place" contract: grep the JSON
+    stream for one request_id and every line of that request surfaces
+    together.
+
+    A fresh logger name is used deliberately: structlog's
+    cache_logger_on_first_use freezes a module logger's processor chain at
+    first use, so reconfiguring the renderer mid-process does not touch
+    already-cached module loggers. The chain itself is what matters here
+    (merge_contextvars -> JSONRenderer), and the module-level event shapes
+    are pinned by the stub tests.
+    """
+    settings = get_settings()
+    original = settings.log_format
+    try:
+        settings.log_format = "json"
+        setup_logging()
+        structlog.contextvars.bind_contextvars(request_id="req-abc123", trace_id="a" * 32)
+        try:
+            lines = _emit_through_stdlib(
+                "test-correlation", "request_completed", method="POST", path="/x", status=429
+            )
+        finally:
+            structlog.contextvars.clear_contextvars()
+    finally:
+        settings.log_format = original
+        setup_logging()
+
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert data["event"] == "request_completed"
+    assert data["method"] == "POST"
+    assert data["status"] == 429
+    assert data["request_id"] == "req-abc123"
+    assert data["trace_id"] == "a" * 32

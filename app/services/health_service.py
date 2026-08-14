@@ -22,6 +22,7 @@ doesn't trigger k8s restart loops. Every check is wrapped in a timeout.
 
 import asyncio
 import time
+from collections.abc import Awaitable
 from typing import Literal
 
 from redis.asyncio import Redis
@@ -31,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.registry import registry
 from app.core.cache import get_redis
 from app.core.config import get_settings
+from app.core.logging import get_logger
 from app.core.metrics import health_check_outcome
 from app.schemas.health import HealthReport
 
@@ -39,6 +41,8 @@ _CHECK_TIMEOUT_SECONDS = 5.0
 
 CheckStatus = Literal["ok", "down"]
 
+logger = get_logger("health")
+
 
 async def check_health(session: AsyncSession) -> HealthReport:
     """Probe every dependency and aggregate per the ok/degraded/down contract.
@@ -46,18 +50,17 @@ async def check_health(session: AsyncSession) -> HealthReport:
     Postgres and Redis are critical: if either is down the overall status is
     "down" regardless of the non-critical checks. Workers and adapters are
     non-critical: any failure there degrades (200) rather than fails the probe.
-    """
-    postgres: CheckStatus = await _check_postgres(session)
-    redis: CheckStatus = await _check_redis()
-    workers: CheckStatus = await _check_workers(redis_ok=redis == "ok")
-    adapters: dict[str, str] = await _check_adapters()
 
-    # Record probe outcomes so /metrics can show each check's ok/down rates.
-    health_check_outcome("postgres", postgres)
-    health_check_outcome("redis", redis)
-    health_check_outcome("workers", workers)
-    for name, adapter_status in adapters.items():
-        health_check_outcome(f"adapter:{name}", adapter_status)
+    Every outcome flows through ``_probe``, which records the counter AND a
+    structured ``health_probe`` line (check, status, duration_ms) so probe
+    outcomes join the same log stream as the request logs. Health probes hit
+    the admin app, which deliberately carries no middleware, so these lines
+    carry no request_id — correlate across probes by check + timestamp.
+    """
+    postgres: CheckStatus = await _probe("postgres", _check_postgres(session))
+    redis: CheckStatus = await _probe("redis", _check_redis())
+    workers: CheckStatus = await _probe("workers", _check_workers(redis_ok=redis == "ok"))
+    adapters: dict[str, str] = await _check_adapters()
 
     if postgres != "ok" or redis != "ok":
         status: Literal["ok", "degraded", "down"] = "down"
@@ -128,17 +131,34 @@ async def _has_fresh_worker_heartbeat(redis: Redis) -> bool:
     return False
 
 
+async def _probe(name: str, coro: Awaitable[CheckStatus]) -> CheckStatus:
+    """Run one check and record its outcome: a counter AND a structured log
+    line with timing. Exceptions that escape the check count as "down" — the
+    callers' own try/excepts are the primary guard, this is the belt."""
+    start = time.perf_counter()
+    try:
+        status = await coro
+    except Exception:
+        status = "down"
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    health_check_outcome(name, status)
+    logger.info("health_probe", check=name, status=status, duration_ms=duration_ms)
+    return status
+
+
 async def _check_adapters() -> dict[str, str]:
     """Probe every registered backend's health_check, individually bounded."""
     results: dict[str, str] = {}
     for name in registry.list():
-        adapter = registry.get(name)
-        if adapter is None:
-            results[name] = "down"
-            continue
-        try:
-            await asyncio.wait_for(adapter.health_check(), timeout=_CHECK_TIMEOUT_SECONDS)
-            results[name] = "ok"
-        except Exception:
-            results[name] = "down"
+        results[name] = await _probe(f"adapter:{name}", _check_adapter(name))
     return results
+
+
+async def _check_adapter(name: str) -> CheckStatus:
+    """One adapter's health_check, timeout-bounded so a hung backend can't
+    hang the probe."""
+    adapter = registry.get(name)
+    if adapter is None:
+        return "down"
+    await asyncio.wait_for(adapter.health_check(), timeout=_CHECK_TIMEOUT_SECONDS)
+    return "ok"
