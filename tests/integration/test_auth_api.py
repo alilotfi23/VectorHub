@@ -256,6 +256,8 @@ async def test_member_management_flow(client: AsyncClient) -> None:
     listed = await client.get(f"{API}/tenants/{tenant_id}/members", headers=headers)
     assert listed.status_code == 200
     assert {m["role"] for m in listed.json()} == {"owner", "editor"}
+    # Rank-ordered: the owner lists before the provisioned editor.
+    assert [m["role"] for m in listed.json()] == ["owner", "editor"]
 
     # The provisioned member can log in and read the tenant.
     member_login = await client.post(

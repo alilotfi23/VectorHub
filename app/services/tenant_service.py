@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.rbac import Permission, has_permission
+from app.core.rbac import Permission, has_permission, role_rank
 from app.core.security import Principal, hash_password
 from app.db.models import Tenant, User
 from app.services.audit_service import AuditService
@@ -65,10 +65,11 @@ class TenantService:
 
     async def list_members(self, actor: Principal, *, tenant_id: str) -> list[User]:
         await self._assert_tenant_access(actor, tenant_id)
-        rows = await self._session.scalars(
-            select(User).where(User.tenant_id == tenant_id).order_by(User.created_at)
-        )
-        return list(rows)
+        rows = await self._session.scalars(select(User).where(User.tenant_id == tenant_id))
+        # Deterministic order: role rank descending (owners first), then email.
+        # created_at is a Python-side default that can tie within a batch, so
+        # it must not be the sort key; email is unique, so the key is total.
+        return sorted(rows, key=lambda u: (-role_rank(u.role), u.email))
 
     async def add_member(
         self,

@@ -1,11 +1,12 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.security import Principal
+from app.core.security import Principal, hash_password
 from app.db.models import AuditLog, User
 from app.services.auth_service import AuthService
 from app.services.tenant_service import TenantService
@@ -204,6 +205,39 @@ async def test_list_members_cross_tenant_hidden(db: AsyncSession) -> None:
     with pytest.raises(AppError) as exc:
         await TenantService(db).list_members(owner_a, tenant_id=user_b.tenant_id)
     assert exc.value.code == ErrorCode.TENANT_NOT_FOUND
+
+
+async def test_list_members_ordered_by_role_then_email(db: AsyncSession) -> None:
+    """Deterministic ordering regardless of created_at ties: role rank desc
+    (owners first), then email."""
+    _, owner = await _register(db, "org")
+    past = datetime(2026, 1, 1, tzinfo=UTC)
+    # Insert viewers with identical created_at *before* the owner's (created
+    # at registration, later): only a rank-first key puts the owner first,
+    # and the viewers' tie is decided by email.
+    db.add_all(
+        [
+            User(
+                tenant_id=owner.tenant_id,
+                email=_unique("aa-viewer@example.com"),
+                password_hash=hash_password("password-123"),
+                role="viewer",
+                created_at=past,
+            ),
+            User(
+                tenant_id=owner.tenant_id,
+                email=_unique("bb-viewer@example.com"),
+                password_hash=hash_password("password-123"),
+                role="viewer",
+                created_at=past,
+            ),
+        ]
+    )
+    await db.commit()
+
+    members = await TenantService(db).list_members(owner, tenant_id=owner.tenant_id)
+    assert [m.role for m in members] == ["owner", "viewer", "viewer"]
+    assert members[1].email < members[2].email
 
 
 async def test_change_member_role(db: AsyncSession) -> None:
