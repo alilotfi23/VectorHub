@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Testcontainers needs Docker; the full integration/e2e suites boot real
+  # Postgres, Redis, MinIO, Chroma, Qdrant, Weaviate and the Milvus trio
+  # (etcd + MinIO sidecars).
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint-type:
+    name: lint + type
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: ruff check
+        run: uv run ruff check app tests alembic
+      - name: ruff format
+        run: uv run ruff format --check app tests alembic
+      - name: mypy
+        run: uv run mypy .
+
+  tests-random-order:
+    name: tests (randomized order)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Run suite in randomized order
+        # Randomized order is the hardening gate: order-dependent registry,
+        # fixture, and middleware state (e.g. a fixture re-registering an
+        # adapter class from settings defaults, or a layer conftest
+        # re-exporting session-scoped fixtures) fails here instead of
+        # silently passing in a fixed order. pytest-random-order prints the
+        # seed used — reproduce a failure with --random-order-seed=<seed>.
+        # The soak (100k-vector ingest, throughput validation) is deselected:
+        # it adds minutes and is not an order-dependency check.
+        run: |
+          uv run pytest -q \
+            --random-order \
+            --random-order-bucket=global \
+            -m "not soak"

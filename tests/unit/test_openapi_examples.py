@@ -21,13 +21,13 @@ from fastapi.openapi.utils import get_openapi
 import app.adapters  # noqa: F401  (registers the four built-ins)
 from app.adapters.base import CapabilityEntry
 from app.adapters.registry import registry
-from app.adapters.weaviate_adapter import WeaviateAdapter
 from app.main import app as platform_app
 from app.schemas.examples import (
     hybrid_example_for,
     query_request_example,
     vector_record_example,
 )
+from tests.support import registry_preserved
 
 
 def _entry(**overrides: Any) -> CapabilityEntry:
@@ -155,12 +155,12 @@ def test_openapi_examples_track_a_backend_leaving_the_registry() -> None:
     }
     assert weaviate_modes == {"text+vector"}, "weaviate is the text+vector backend"
 
-    registry.unregister("weaviate")
-    try:
+    with registry_preserved("weaviate"):
+        registry.unregister("weaviate")
         examples = _examples("HybridQueryRequest")
         assert not any("query_text" in ex for ex in examples)
-    finally:
-        registry.register("weaviate", WeaviateAdapter)
 
+    # The displaced instance is restored — the registry is back to the live
+    # feature set regardless of what the test did.
     examples = _examples("HybridQueryRequest")
     assert any("query_text" in ex for ex in examples)
