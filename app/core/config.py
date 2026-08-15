@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     batch_storage_access_key: str = "minioadmin"
     batch_storage_secret_key: str = "minioadmin"
     batch_storage_bucket: str = "vectorhub-batches"
+    # Enqueue-time quota: how many queued/running batch jobs a tenant may have
+    # outstanding at once (checked at enqueue, per the batch note). Prevents
+    # queue flooding without a hard payload-size cap.
+    max_concurrent_jobs_per_tenant: int = 5
 
     # OpenTelemetry export (Phase 7 pull-forward). None = spans are created
     # and correlated (request_id -> trace_id) but dropped at the exporter

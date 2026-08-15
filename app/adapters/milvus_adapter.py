@@ -662,6 +662,7 @@ class MilvusAdapter(VectorDBAdapter):
             multi_vector=False,
             sparse_vectors=True,
             mutable_config=_MUTABLE_CONFIG,
+            default_batch_chunk_size=5000,  # Milvus 1–10k per request
             notes=(
                 "tenancy: partition-per-tenant — inserts route by partition_name, every read "
                 "prunes to partition_names=[tenant_id] (no unscoped path by construction). "

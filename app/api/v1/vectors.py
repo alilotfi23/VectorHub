@@ -5,15 +5,19 @@ into the services (the resolve-once discipline). Hybrid search and the async
 batch endpoint land in later phases.
 """
 
-from fastapi import APIRouter, Depends, Response
+from collections.abc import AsyncIterator
+
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.base import SparseVector
 from app.api.deps import get_current_principal, require_collection_permission
+from app.core.exceptions import AppError, ErrorCode
 from app.core.rbac import Permission
 from app.core.security import Principal
 from app.db.session import get_session
 from app.schemas.vectors import (
+    BatchEnqueueResponse,
     HybridQueryRequest,
     QueryRequest,
     QueryResponse,
@@ -23,6 +27,7 @@ from app.schemas.vectors import (
     VectorUpsertRequest,
 )
 from app.services.collection_service import CollectionAccess
+from app.services.job_service import JobService
 from app.services.search_service import SearchService
 from app.services.vector_service import VectorService
 
@@ -102,6 +107,37 @@ async def query_vectors(
             for r in results
         ]
     )
+
+
+@router.post("/{name}/vectors/batch", response_model=BatchEnqueueResponse, status_code=202)
+async def enqueue_batch(
+    request: Request,
+    access: CollectionAccess = Depends(require_collection_permission(Permission.VECTOR_WRITE)),
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+) -> BatchEnqueueResponse:
+    """Async batch ingest: ``application/x-ndjson`` (one vector record per
+    line, streamed — never buffered whole) is staged to object storage and
+    handed to the arq worker as ``{job_id, payload_key}``; track via
+    ``GET /api/v1/jobs/{job_id}``. The payload never transits Redis/arq.
+    Tenant quota is checked at enqueue time (TENANT_QUOTA_EXCEEDED)."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/x-ndjson":
+        raise AppError(
+            ErrorCode.VALIDATION_UNSUPPORTED_OPERATION,
+            "Batch payloads must be application/x-ndjson (one vector record per line)",
+            details={"capability": "batch_ndjson"},
+            status_code=415,
+        )
+
+    async def body_chunks() -> AsyncIterator[bytes]:
+        async for chunk in request.stream():
+            yield chunk
+
+    job = await JobService(session).create_batch_ingest(
+        principal, access=access, chunks=body_chunks()
+    )
+    return BatchEnqueueResponse(job_id=job.id, status=job.status)
 
 
 @router.post("/{name}/hybrid-query", response_model=QueryResponse)

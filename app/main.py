@@ -16,12 +16,13 @@ from prometheus_fastapi_instrumentator import metrics as instrumentator_metrics
 
 from app import adapters  # noqa: F401  (registers the built-in adapters in the registry)
 from app.admin import app as admin_app
-from app.api.v1 import api_keys, auth, collections, tenants, vectors
+from app.api.v1 import api_keys, audit_logs, auth, capabilities, collections, jobs, tenants, vectors
 from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, ErrorCode, ErrorResponse, error_response_handler
 from app.core.logging import setup_logging
 from app.core.tracing import setup_tracing
+from app.middleware.audit import AuditMiddleware
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.tracing import TraceMiddleware
@@ -46,6 +47,10 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 # rate-limit middleware, so it is registered last (outermost).
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(MetricsMiddleware)
+# Failed write attempts (4xx/5xx with a decodable principal) land in the
+# append-only audit_log — registered outermost so it observes the whole
+# chain, including validation errors and the audit of the request itself.
+app.add_middleware(AuditMiddleware)
 
 # Request-duration histograms and request/response size metrics (Phase 7
 # pull-forward). Registers on the shared default registry, so the admin app's
@@ -130,6 +135,9 @@ app.include_router(tenants.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
 app.include_router(collections.router, prefix="/api/v1")
 app.include_router(vectors.router, prefix="/api/v1")
+app.include_router(capabilities.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(audit_logs.router, prefix="/api/v1")
 
 if settings.cors_allowed_origins.strip() == "*":
     allow_origins = ["*"]

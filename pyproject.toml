@@ -25,6 +25,7 @@ dependencies = [
     "qdrant-client>=1.19.0",
     "weaviate-client>=4.23.0",
     "pymilvus>=3.0.1",
+    "boto3>=1.43.72",
 ]
 
 [dependency-groups]

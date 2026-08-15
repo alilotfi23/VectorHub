@@ -444,6 +444,7 @@ class ChromaAdapter(VectorDBAdapter):
             multi_vector=False,
             sparse_vectors=False,
             mutable_config=frozenset(),  # index config is creation-time on Chroma
+            default_batch_chunk_size=500,  # Chroma 100–1k per request (the throughput floor)
             notes=(
                 "tenancy: per-tenant physical collections; the physical object IS the boundary",
                 "created_at/updated_at/tenant_id folded into reserved _vhk_* metadata keys",

@@ -484,6 +484,7 @@ class WeaviateAdapter(VectorDBAdapter):
             multi_vector=False,
             sparse_vectors=False,
             mutable_config=_MUTABLE_CONFIG,
+            default_batch_chunk_size=1000,  # Weaviate ~1k per request (server-side batching)
             notes=(
                 "tenancy: native multi-tenancy (multiTenancyConfig.enabled, one shard per "
                 "tenant); unscoped queries on a tenant-enabled class error (fail-closed)",

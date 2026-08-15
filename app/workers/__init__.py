@@ -15,6 +15,7 @@ from typing import Any
 from arq.connections import RedisSettings
 
 from app.core.config import get_settings
+from app.workers.batch import run_batch_ingest as run_batch_ingest
 from app.workers.heartbeat import HeartbeatLoop, write_heartbeat
 
 # The heartbeat loop lives for the worker process's lifetime; the arq context
@@ -62,8 +63,10 @@ class WorkerSettings:
     # arq's WorkerSettingsType is a Protocol it can't fully satisfy statically
     # (loose stubs, no py.typed) — the entrypoint ignores that one call. This
     # class is consumed by arq's own CLI (`arq app.workers.WorkerSettings`).
-    # Phase 6 adds the batch-job tasks here (e.g. run_batch_ingest).
-    functions: list[Any] = [ping]
+    # The batch-ingest task (vectors/batch) streams the staged JSONL from
+    # object storage, validates per line, and chunked-upserts via the
+    # collection's adapter — see app/workers/batch.py.
+    functions: list[Any] = [ping, run_batch_ingest]
     on_startup = _on_startup
     on_shutdown = _on_shutdown
     redis_settings = _redis_settings()

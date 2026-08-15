@@ -594,6 +594,7 @@ class QdrantAdapter(VectorDBAdapter):
             multi_vector=False,
             sparse_vectors=True,
             mutable_config=_MUTABLE_CONFIG,
+            default_batch_chunk_size=5000,  # Qdrant 5–10k per request
             notes=(
                 "tenancy: payload-partition on the _vhk_tenant_id keyword index (is_tenant=true) — "
                 "Qdrant's native tenant API was removed server-side; the adapter ALWAYS applies "

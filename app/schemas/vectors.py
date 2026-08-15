@@ -220,6 +220,14 @@ class QueryResponse(BaseModel):
     results: list[QueryResultOut]
 
 
+class BatchEnqueueResponse(StrictRequest):
+    """Accepted async batch job (``POST /collections/{name}/vectors/batch``).
+    Track progress via ``GET /api/v1/jobs/{job_id}``."""
+
+    job_id: str
+    status: str = "queued"
+
+
 # --- Hybrid search (Phase 4: qdrant sparse+vector, weaviate text+vector) ---
 #
 # Request shape per CLAUDE.md: `vector` (required), `sparse_vector` (required

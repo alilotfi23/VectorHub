@@ -143,6 +143,12 @@ class CapabilityEntry:
     multi_vector: bool
     sparse_vectors: bool
     mutable_config: frozenset[str] = frozenset()
+    # The worker's chunk size for this backend's batch_upsert — the per-
+    # backend sizing contract from the batch-throughput design (Chroma 100–1k,
+    # Qdrant 5–10k, Weaviate ~1k, Milvus 1–10k). Exposed via the capability
+    # matrix so clients and the worker pick a backend-appropriate chunk
+    # instead of assuming one size fits all.
+    default_batch_chunk_size: int = 1000
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
