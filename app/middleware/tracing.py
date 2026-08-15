@@ -18,9 +18,11 @@ Every inbound HTTP request:
 The request ID and the 32-hex trace ID are bound into the structlog
 contextvars for the request's lifetime (``merge_contextvars`` is already in
 the processor chain), so every log line emitted while the request is in
-flight — service layer, adapters, Redis, Postgres — carries both. The admin
-app deliberately has no middleware; this correlation layer is public-app-only
-like the rest.
+flight — service layer, adapters, Redis, Postgres — carries both. The same
+two IDs are mirrored into the Sentry isolation scope (when Sentry is
+configured), so an unhandled exception captured during the request carries
+matching ``request_id``/``trace_id`` tags. The admin app deliberately has no
+middleware; this correlation layer is public-app-only like the rest.
 """
 
 import secrets
@@ -43,6 +45,7 @@ from opentelemetry.trace import (
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.core.sentry import sentry_bind_context
 from app.core.tracing import derive_trace_id
 from app.middleware.routing import route_template
 
@@ -67,6 +70,10 @@ class TraceMiddleware:
         request_id = _resolve_request_id(scope)
         trace_id = derive_trace_id(request_id)
         structlog.contextvars.bind_contextvars(request_id=request_id, trace_id=f"{trace_id:032x}")
+        # Same IDs into the Sentry scope (no-op when Sentry is off): an
+        # unhandled exception captured during this request carries the
+        # request_id/trace_id tags, joining it to the log/trace streams.
+        sentry_bind_context(request_id, f"{trace_id:032x}")
 
         tracer = self._tracer or trace.get_tracer("app.middleware.tracing")
         span = tracer.start_span(

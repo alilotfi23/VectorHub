@@ -21,6 +21,7 @@ from app.core.cache import close_redis
 from app.core.config import get_settings
 from app.core.exceptions import AppError, ErrorCode, ErrorResponse, error_response_handler
 from app.core.logging import setup_logging
+from app.core.sentry import setup_sentry
 from app.core.tracing import setup_tracing
 from app.middleware.audit import AuditMiddleware
 from app.middleware.metrics import MetricsMiddleware
@@ -29,6 +30,9 @@ from app.middleware.tracing import TraceMiddleware
 
 settings = get_settings()
 
+# Sentry first so its FastAPI integration's patches are installed before the
+# app is built (no-op when SENTRY_DSN is unset).
+setup_sentry()
 setup_logging()
 setup_tracing()
 

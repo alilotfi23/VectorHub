@@ -112,6 +112,17 @@ class Settings(BaseSettings):
     # (standard OTEL_EXPORTER_* env vars apply on top).
     otel_exporter_otlp_endpoint: str | None = None
 
+    # Sentry error tracking (Phase 7 pull-forward). None = Sentry off entirely
+    # (the SDK is never even imported — see app/core/sentry.py). Set
+    # SENTRY_DSN to stream *unhandled* exceptions (500s only; business errors
+    # are handled and never reach Sentry). Captured events carry the
+    # request_id/trace_id tags the tracing middleware mirrors into the Sentry
+    # scope, so an event joins to the log/trace streams by the same IDs.
+    # Error-only by default — no performance tracing (traces_sample_rate off).
+    sentry_dsn: str | None = None
+    # Overrides the environment reported to Sentry; defaults to ENVIRONMENT.
+    sentry_environment: str | None = None
+
     # Vector backends — adapters consume these from Phase 3 onward.
     qdrant_url: str = "http://localhost:6333"
     weaviate_url: str = "http://localhost:8080"
