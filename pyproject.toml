@@ -1,6 +1,6 @@
 [project]
 name = "vectorhub-platform"
-version = "0.1.0"
+version = "1.0.0"
 description = "Unified REST API over Weaviate, Qdrant, Milvus, and Chroma"
 license = "GPL-3.0-only"
 requires-python = ">=3.12"
