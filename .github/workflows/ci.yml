@@ -88,6 +88,29 @@ jobs:
             --random-order-bucket=global \
             -m "milvus"
 
+  helm-validate:
+    # The Helm chart (deploy/helm/vectorhub) wraps the kustomize manifests;
+    # keep it honest: lint plus render in the default, managed-control-plane,
+    # and managed-backends modes. Template breakage fails here instead of at
+    # install time.
+    name: helm lint + render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint deploy/helm/vectorhub
+      - name: "render (default: self-hosted everything)"
+        run: helm template vh deploy/helm/vectorhub >/dev/null
+      - name: render (managed control plane)
+        run: >-
+          helm template vh deploy/helm/vectorhub
+          --set postgres.enabled=false,redis.enabled=false
+          --set postgres.externalUrl=postgresql+asyncpg://app:pw@rds:5432/vh
+          --set redis.externalUrl=redis://managed:6379/0 >/dev/null
+      - name: render (managed vector backends)
+        run: helm template vh deploy/helm/vectorhub --set backends.enabled=false >/dev/null
+
   deploy-smoke:
     # The deployment gate: boots the FULL compose stack (all four vector
     # backends incl. the Milvus trio, MinIO, Postgres, Redis, app + worker)
