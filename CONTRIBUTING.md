@@ -178,7 +178,8 @@ and not type-checkable in this project's config) — don't re-include it.
 | `tests-milvus` | milvus-marked tests, randomized | `uv run pytest -q --random-order -m "milvus"` |
 | `helm-validate` | `helm lint` + render in default/managed modes | `helm lint deploy/helm/vectorhub` + `helm template` variants |
 | `deploy-smoke` | boot full compose, `/health` ok, public 404, **all-four-backends API journey** | `bash deploy/smoke.sh` |
-| `docker-image` | push `ghcr.io` image on main, gated on lint + smoke | n/a |
+| `release` | **Semantic Release** on main: Conventional Commits → SemVer stamp in `pyproject.toml` + `CHANGELOG.md` + `vX.Y.Z` tag + GitHub release (no-op on docs/chore-only pushes) | `uvx python-semantic-release@10.6.1 -v --noop version` (dry run) |
+| `docker-image` | push `ghcr.io` image on main, gated on lint + smoke; also tagged `vX.Y.Z` when a release was made | n/a |
 | `tests-nightly-seed` | full suite incl. milvus + soak, date-derived seed, cron-only | `uv run pytest -q --random-order --random-order-seed=$(date +%Y%m%d)` |
 
 If CI fails in a job you can't run locally (e.g. the Milvus trio is heavy),
@@ -206,7 +207,11 @@ host's `python3`, no uv/deps) and re-run `bash deploy/smoke.sh` to verify.
 - **Conventional Commits**: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`,
   `chore:`, `ci:`, with a scope where useful
   (e.g. `feat(adapters): implement QdrantAdapter.query with metadata
-  filtering`).
+  filtering`). Commit types are **semantic-release inputs**, not just style:
+  `feat:` bumps minor, `fix:`/`perf:` bump patch, and a `BREAKING CHANGE:`
+  footer (or `!` in the subject) bumps major. A release (tag + GitHub
+  release + image tag) fires only when a commit since the last tag warrants
+  one — `docs:`/`chore:`/`ci:` pushes are release-free by design.
 - **Commit after every meaningful change** — a working unit (an adapter
   method, a route, a passing test suite, a config file). Don't batch
   unrelated changes into one commit; don't leave a giant "wip" commit.

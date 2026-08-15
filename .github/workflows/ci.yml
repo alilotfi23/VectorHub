@@ -128,17 +128,46 @@ jobs:
       - name: Boot stack and assert /health ok
         run: deploy/smoke.sh
 
+  release:
+    # Semantic Release (python-semantic-release v10): parses Conventional
+    # Commits since the last tag, stamps the next SemVer into pyproject.toml,
+    # updates CHANGELOG.md, commits the bump (chore(release): vX.Y.Z), tags it
+    # vX.Y.Z, pushes, and creates a GitHub release with the changelog notes.
+    # Only user-facing commits (feat/fix/perf/breaking) trigger a release; a
+    # docs/chore/ci-only push exits 0 with `released=false` and no tag. The
+    # released version flows to docker-image as an immutable image tag.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: semantic release
+    runs-on: ubuntu-latest
+    needs: [lint-type, deploy-smoke]
+    concurrency: release
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so PSR can find the last tag and parse every commit
+          # since it (shallow checkout would miss both).
+          fetch-depth: 0
+      - name: Python Semantic Release
+        id: semantic
+        uses: python-semantic-release/python-semantic-release@v10.6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
   docker-image:
     # Pushes the production image to ghcr.io on main so the k8s overlays
     # have a deployable image. Gated on the deploy smoke: nothing is pushed
     # until the full stack boots healthy. On PRs, deploy-smoke already
     # built and validated the same Dockerfile, so no separate build runs.
     # The image serves both apps in one process (python -m app.main) and
-    # carries the worker + migrate entrypoints.
+    # carries the worker + migrate entrypoints. When the release job made a
+    # release, the image also gets an immutable vX.Y.Z tag matching it.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: build + push image
     runs-on: ubuntu-latest
-    needs: [lint-type, deploy-smoke]
+    needs: [lint-type, deploy-smoke, release]
     permissions:
       contents: read
       packages: write
@@ -151,15 +180,25 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tags
+        id: tags
+        run: |
+          TAGS="ghcr.io/${{ github.repository }}:latest
+          ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          if [ "${{ needs.release.outputs.released }}" = "true" ]; then
+            TAGS="$TAGS
+          ghcr.io/${{ github.repository }}:v${{ needs.release.outputs.version }}"
+          fi
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

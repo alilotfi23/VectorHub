@@ -112,3 +112,31 @@ markers = [
     "soak: 100k-vector adapter ingest soak (throughput floor)",
     "milvus: requires the Milvus standalone trio (etcd + MinIO sidecars) — runs in its own CI job per the deployment policy",
 ]
+
+[tool.semantic_release]
+# Semantic Release: version determined from Conventional Commits on main,
+# stamped into pyproject.toml, tagged vX.Y.Z, and published as a GitHub
+# release (see the `release` job in .github/workflows/ci.yml).
+version_toml = ["pyproject.toml:project.version"]
+commit_parser = "conventional"
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+parse_squash_commits = true
+ignore_merge_commits = true
+
+[tool.semantic_release.changelog]
+# Keep the changelog to user-facing changes (feat/fix/perf/breaking);
+# chore/ci/refactor/style/test/docs noise is excluded. Single-quoted TOML
+# literal strings so the regex backslashes are taken verbatim.
+exclude_commit_patterns = [
+    'chore(?:\([^)]*?\))?: .+',
+    'ci(?:\([^)]*?\))?: .+',
+    'refactor(?:\([^)]*?\))?: .+',
+    'style(?:\([^)]*?\))?: .+',
+    'test(?:\([^)]*?\))?: .+',
+    'build(?:\([^)]*?\))?: .+',
+    'docs(?:\([^)]*?\))?: .+',
+    'Initial commit.*',
+]
