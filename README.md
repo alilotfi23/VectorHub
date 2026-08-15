@@ -133,7 +133,7 @@ Three ways to run, one image (built by CI and pushed to `ghcr.io` on main after 
 | --- | --- |
 | **Local/dev** | `deploy/docker-compose.yml` — everything self-hosted, `mc` bucket one-shot, `migrate` one-shot before app/worker start |
 | **Cloud-managed** | `deploy/docker-compose.cloud.yml` — control plane self-hosted; vector URLs are `${VAR:?}`-required, so `docker compose config` fails fast if a managed endpoint is missing. Same image. |
-| **Kubernetes** | `deploy/k8s/` — kustomize base + dev/staging/prod overlays; app Deployment with migrate initContainer, probes on the internal admin port (9091 appears in **no** Service by construction), HPA, Ingress; self-hosted backend StatefulSets (dev/staging) or managed endpoints (prod). `kubectl apply -k deploy/k8s/overlays/<env>` |
+| **Kubernetes** | `deploy/k8s/` — kustomize base + dev/staging/prod overlays; app Deployment with migrate initContainer, probes on the internal admin port (9091 appears in **no** Service by construction), HPA, Ingress; self-hosted backend StatefulSets (dev/staging) or managed endpoints (prod). `kubectl apply -k deploy/k8s/overlays/<env>` — or the **Helm chart** `deploy/helm/vectorhub` wrapping the same resources with image tags, credentials, replica counts, and self-hosted/managed toggles as values (`helm install vectorhub deploy/helm/vectorhub --set image.tag=main`) |
 
 **Observability stack** (`deploy/monitoring/`): Prometheus alert rules, Alertmanager routing (critical → pager, warning → Slack), Grafana dashboard, and a monitoring compose trio. See `deploy/monitoring/README.md`.
 

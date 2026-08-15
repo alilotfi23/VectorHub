@@ -62,6 +62,21 @@ refuses to boot with the dev default in `ENVIRONMENT=staging/prod`.
   password is injected via `$(POSTGRES_APP_PASSWORD)` interpolation, so keep
   the `secretKeyRef` even when Postgres is managed).
 
+## Helm chart
+
+The same manifests are packaged as a parameterized Helm chart at
+`deploy/helm/vectorhub` (image tags, credentials, replica counts, and the
+self-hosted vs managed toggles as values):
+
+```bash
+helm install vectorhub ../helm/vectorhub -n vectorhub --create-namespace \
+  --set image.tag=main --set jwt.secret="$(openssl rand -hex 32)"
+```
+
+Keep behavioral changes (probes, securityContext, the admin-port boundary)
+in sync across both — the CI `helm-validate` job catches template breakage,
+not behavioral drift. See the chart's README for the values reference.
+
 ## Verify
 
 ```bash
