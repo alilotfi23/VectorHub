@@ -284,6 +284,8 @@ Every adapter accepts and returns this common shape (backend-native filtering ap
 
 **Platform-wide limits** (enforced by Pydantic at the schema layer, documented in OpenAPI): `VECTOR_DIMENSION_EXCEEDED` (> 4096 dims), `BATCH_SIZE_EXCEEDED` (> 100 sync vectors — the async path has no hard cap), `TOP_K_EXCEEDED` (> 1000), sparse cardinality cap. One exception documented in the capability matrix: Chroma doesn't track per-record timestamps, so `ChromaAdapter` folds `created_at`/`updated_at` into the stored metadata.
 
+**Float precision:** all four backends store vectors as **float32**, so fetched/returned vectors are quantized — e.g. `0.2` may round-trip as `0.20000000298023224` (Qdrant happened to round-trip exactly in our smoke runs; Weaviate/Milvus/Chroma did not). This is backend-native behavior, not a bug. Do not assert bit-exact float equality across backends; compare with a tolerance (the deploy smoke journey uses `1e-3`).
+
 ---
 
 ## Error taxonomy
