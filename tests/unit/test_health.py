@@ -34,30 +34,30 @@ def test_health_down_without_dependencies(monkeypatch: pytest.MonkeyPatch) -> No
     # Point every built-in adapter at a guaranteed-dead port so the probe is
     # deterministic regardless of what earlier suites in the process left
     # registered (the integration layer's session-scoped containers can still
-    # be running here, which would otherwise report "ok").
+    # be running here, which would otherwise report "ok"). Restoring the
+    # *displaced* instances keeps that determinism without corrupting
+    # registry state for later tests.
     from app.adapters.chroma_adapter import ChromaAdapter
     from app.adapters.milvus_adapter import MilvusAdapter
     from app.adapters.qdrant_adapter import QdrantAdapter
     from app.adapters.registry import registry
     from app.adapters.weaviate_adapter import WeaviateAdapter
+    from tests.support import registry_preserved
 
-    for name, cls in (
-        ("chroma", ChromaAdapter),
-        ("qdrant", QdrantAdapter),
-        ("weaviate", WeaviateAdapter),
-        ("milvus", MilvusAdapter),
-    ):
-        registry.register(name, cls, url="http://127.0.0.1:1")
-    monkeypatch.setattr(health_service, "get_redis", lambda: None)
-    admin_app.dependency_overrides[get_session] = override_get_session
-    try:
-        resp = admin_client.get("/health")
-    finally:
-        admin_app.dependency_overrides.clear()
-        registry.register("chroma", ChromaAdapter)
-        registry.register("qdrant", QdrantAdapter)
-        registry.register("weaviate", WeaviateAdapter)
-        registry.register("milvus", MilvusAdapter)
+    with registry_preserved("chroma", "qdrant", "weaviate", "milvus"):
+        for name, cls in (
+            ("chroma", ChromaAdapter),
+            ("qdrant", QdrantAdapter),
+            ("weaviate", WeaviateAdapter),
+            ("milvus", MilvusAdapter),
+        ):
+            registry.register(name, cls, url="http://127.0.0.1:1")
+        monkeypatch.setattr(health_service, "get_redis", lambda: None)
+        admin_app.dependency_overrides[get_session] = override_get_session
+        try:
+            resp = admin_client.get("/health")
+        finally:
+            admin_app.dependency_overrides.clear()
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "down"

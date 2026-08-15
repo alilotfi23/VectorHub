@@ -114,15 +114,16 @@ async def test_collection_unregistered_backend_503(client: AsyncClient) -> None:
     COLLECTION_BACKEND_UNAVAILABLE, not a silent fallback. All four backends
     are built-ins as of Phase 5, so the test unregisters one deterministically
     (and restores it) — never depending on what other suites left registered."""
-    from app.adapters.milvus_adapter import MilvusAdapter
+    from tests.support import registry_preserved
 
-    registry.unregister("milvus")
-    try:
+    # Restore the displaced instance, not a fresh class: re-registering the
+    # adapter class rebuilds it from settings defaults, discarding the
+    # testcontainer URL the session fixture installed.
+    with registry_preserved("milvus"):
+        registry.unregister("milvus")
         reg = await _register(client)
         headers = _auth_headers(reg["access_token"])
         resp = await _create(client, headers, "milvus-coll", backend="milvus")
-    finally:
-        registry.register("milvus", MilvusAdapter)
     assert resp.status_code == 503
     assert resp.json()["error_code"] == "COLLECTION_BACKEND_UNAVAILABLE"
 

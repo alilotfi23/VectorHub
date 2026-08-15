@@ -19,6 +19,7 @@ from app.core.cache import get_redis
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.workers.heartbeat import WORKER_HEARTBEAT_PREFIX
+from tests.support import registry_preserved
 
 
 class _HealthyAdapter:
@@ -42,18 +43,19 @@ async def client(
     # Point the qdrant/weaviate/milvus built-ins at guaranteed-dead URLs so
     # the adapters map is deterministic here (the integration layer may or may
     # not have their session-scoped containers running, and the machine may
-    # have local dev servers on the default ports).
-    registry.register("qdrant", QdrantAdapter, url="http://127.0.0.1:1")
-    registry.register("weaviate", WeaviateAdapter, url="http://127.0.0.1:1")
-    registry.register("milvus", MilvusAdapter, url="http://127.0.0.1:1")
-    admin_app.dependency_overrides[get_session] = override_get_session
-    transport = ASGITransport(app=admin_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-    admin_app.dependency_overrides.clear()
-    registry.register("qdrant", QdrantAdapter)
-    registry.register("weaviate", WeaviateAdapter)
-    registry.register("milvus", MilvusAdapter)
+    # have local dev servers on the default ports). Restoring the *displaced*
+    # instances (registry_preserved) matters: the session-scoped backend
+    # fixtures register testcontainer URLs that a class re-registration would
+    # silently discard, poisoning every later backend-dependent test.
+    with registry_preserved("qdrant", "weaviate", "milvus"):
+        registry.register("qdrant", QdrantAdapter, url="http://127.0.0.1:1")
+        registry.register("weaviate", WeaviateAdapter, url="http://127.0.0.1:1")
+        registry.register("milvus", MilvusAdapter, url="http://127.0.0.1:1")
+        admin_app.dependency_overrides[get_session] = override_get_session
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
+        admin_app.dependency_overrides.clear()
 
 
 async def _write_heartbeat(*, ts: float | None = None) -> None:
