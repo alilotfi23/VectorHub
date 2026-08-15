@@ -183,11 +183,14 @@ jobs:
       - name: Compute image tags
         id: tags
         run: |
-          TAGS="ghcr.io/${{ github.repository }}:latest
-          ghcr.io/${{ github.repository }}:${{ github.sha }}"
+          # Repo names may be mixed-case (e.g. VectorHub) but container
+          # registry names must be lowercase — lowercase the repo ref.
+          REPO="${{ lower(github.repository) }}"
+          TAGS="ghcr.io/${REPO}:latest
+          ghcr.io/${REPO}:${{ github.sha }}"
           if [ "${{ needs.release.outputs.released }}" = "true" ]; then
             TAGS="$TAGS
-          ghcr.io/${{ github.repository }}:v${{ needs.release.outputs.version }}"
+          ghcr.io/${REPO}:v${{ needs.release.outputs.version }}"
           fi
           echo "tags<<EOF" >> "$GITHUB_OUTPUT"
           echo "$TAGS" >> "$GITHUB_OUTPUT"
