@@ -30,7 +30,7 @@ async def client(
 
     app.dependency_overrides[get_session] = override_get_session
     # The middleware's session factory is already pointed at the test DB by
-    # the shared session_factory fixture (tests/integration/conftest.py).
+    # the shared session_factory fixture (tests/conftest.py).
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

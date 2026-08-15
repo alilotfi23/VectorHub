@@ -1,3 +1,22 @@
+"""Shared infra fixtures for every test layer (unit/integration/e2e).
+
+These fixtures must live in the *top-level* tests/conftest.py, not a
+layer conftest: pytest registers a conftest's fixtures under that conftest's
+directory path, so a fixture re-exported from one layer's conftest (e.g.
+``from tests.integration.conftest import session_factory``) registers a
+*second* FixtureDef — and with it a second session-scoped instance: a second
+Postgres container, second engine, second middleware patch cycle, second
+vector-DB registration. While layers never interleave (e2e runs before
+integration), that split is invisible; pytest-random-order interleaves the
+layers, and the registry/middleware state flips between the two worlds
+mid-session — e.g. the audit middleware writes to the e2e Postgres where the
+integration-created tenant doesn't exist (ForeignKeyViolationError), and the
+rate limiter's tenant-cap lookup misses. See the random-order CI job.
+
+Containers stay lazy: each fixture only starts when a test requests it, so
+unit tests pay no Docker cost.
+"""
+
 import asyncio
 import os
 from collections.abc import AsyncGenerator
@@ -29,7 +48,7 @@ MILVUS_MINIO_IMAGE = "minio/minio:RELEASE.2024-05-28T17-19-04Z"
 MILVUS_IMAGE = "milvusdb/milvus:v3.0.0"
 MINIO_IMAGE = "minio/minio:RELEASE.2024-05-28T17-19-04Z"
 
-MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
+MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "alembic"))
 APP_ROLE_PASSWORD = "app_test_password"
 
 

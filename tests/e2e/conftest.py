@@ -1,9 +1,10 @@
 """Shared fixtures for the e2e layer.
 
-Re-exports the migrated-real-Postgres fixtures from the integration suite:
-Layer 3 of the isolation suite is control-plane (no vector backend needed),
-so it runs against the same migrated Postgres + ASGI app the integration
-layer uses. The design doc places Layer 3 at tests/e2e/.
+The infra fixtures (migrated Postgres, Redis, real vector backends, MinIO,
+the middleware-patching session factory) live in the top-level
+``tests/conftest.py`` so every layer shares ONE instance of each. This
+conftest only layers the e2e ``client`` on top: Layer 3 of the isolation
+suite runs the real platform against the real backends.
 """
 
 from collections.abc import AsyncGenerator
@@ -14,32 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.session import get_session
 from app.main import app
-from tests.integration.conftest import (  # noqa: F401
-    chroma_backend,
-    chroma_url,
-    db,
-    db_url,
-    milvus_backend,
-    milvus_url,
-    minio_url,
-    qdrant_backend,
-    qdrant_url,
-    redis_url,
-    session_factory,
-    weaviate_backend,
-    weaviate_url,
-)
 
 
 @pytest.fixture
 async def client(
-    session_factory: async_sessionmaker[AsyncSession],  # noqa: F811 — pytest fixture name, shadows the conftest re-export
-    redis_url: str,  # noqa: F811 — cache-on for the e2e layer (the production path)
-    chroma_backend: None,  # noqa: F811 — Layer 3 runs the real platform against real vector backends; the e2e layer must never depend on an earlier integration suite having registered the containers
-    qdrant_backend: None,  # noqa: F811
-    weaviate_backend: None,  # noqa: F811
-    milvus_backend: None,  # noqa: F811
-    minio_url: str,  # noqa: F811 — batch staging (E5 enqueues through the real route, which stages to object storage)
+    session_factory: async_sessionmaker[AsyncSession],
+    redis_url: str,  # cache-on for the e2e layer (the production path)
+    chroma_backend: None,  # Layer 3 runs the real platform against real vector backends
+    qdrant_backend: None,
+    weaviate_backend: None,
+    milvus_backend: None,
+    minio_url: str,  # batch staging (E5 enqueues through the real route)
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
