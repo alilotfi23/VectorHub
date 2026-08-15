@@ -12,10 +12,16 @@ app/main.py.
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import get_settings
 from app.schemas.auth import StrictRequest
+from app.schemas.examples import (
+    examples_extra,
+    hybrid_request_examples,
+    query_request_examples,
+    vector_record_examples,
+)
 
 _VECTOR_MAX_DIMENSION = get_settings().vector_max_dimension
 
@@ -35,11 +41,13 @@ class SparseVectorIn(StrictRequest):
             "Non-zero positions (ascending, unique). "
             f"Cardinality is bounded by SPARSE_MAX_CARDINALITY ({_SPARSE_MAX_CARDINALITY})."
         ),
+        examples=[[0, 3, 7]],
     )
     values: list[float] = Field(
         min_length=1,
         max_length=_SPARSE_MAX_CARDINALITY,
         description="Non-zero values, aligned with indices",
+        examples=[[0.35, 0.5, 0.15]],
     )
 
     @field_validator("indices")
@@ -62,7 +70,12 @@ class VectorRecordIn(StrictRequest):
     """One client-supplied vector record. No tenant_id, no timestamps —
     both are derived server-side. ``sparse_vector`` is optional and only
     meaningful on Qdrant/Milvus (required for hybrid search there); it is
-    stored with the record so a later hybrid query can match it."""
+    stored with the record so a later hybrid query can match it.
+
+    OpenAPI examples are generated from the capability matrix (the sparse
+    variant appears when a registered backend stores sparse vectors)."""
+
+    model_config = ConfigDict(json_schema_extra=examples_extra(vector_record_examples))
 
     id: str = Field(
         min_length=1,
@@ -180,6 +193,12 @@ def validate_filter(node: Any, path: str = "filters") -> None:
 
 
 class QueryRequest(StrictRequest):
+    """Similarity-search request. OpenAPI examples are generated from the
+    capability matrix (the metadata-filter variant appears when a registered
+    backend supports filtering)."""
+
+    model_config = ConfigDict(json_schema_extra=examples_extra(query_request_examples))
+
     vector: list[float] = Field(
         min_length=1,
         max_length=_VECTOR_MAX_DIMENSION,
@@ -239,6 +258,12 @@ class BatchEnqueueResponse(StrictRequest):
 
 
 class HybridQueryRequest(StrictRequest):
+    """Hybrid dense+sparse/text search. OpenAPI examples are generated from
+    the capability matrix — one body per supported hybrid mode (Weaviate's
+    text+vector, Qdrant/Milvus' sparse+vector)."""
+
+    model_config = ConfigDict(json_schema_extra=examples_extra(hybrid_request_examples))
+
     vector: list[float] = Field(
         min_length=1,
         max_length=_VECTOR_MAX_DIMENSION,
