@@ -184,8 +184,10 @@ jobs:
         id: tags
         run: |
           # Repo names may be mixed-case (e.g. VectorHub) but container
-          # registry names must be lowercase — lowercase the repo ref.
-          REPO="${{ lower(github.repository) }}"
+          # registry names must be lowercase. GitHub Actions expressions have
+          # no lowercase function, so lowercase in bash (runs after GitHub
+          # substitutes the ${{ }} expressions).
+          REPO="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
           TAGS="ghcr.io/${REPO}:latest
           ghcr.io/${REPO}:${{ github.sha }}"
           if [ "${{ needs.release.outputs.released }}" = "true" ]; then

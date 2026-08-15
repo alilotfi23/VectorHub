@@ -87,5 +87,5 @@ kubectl -n vectorhub port-forward svc/app 8000:8000   # then hit /api/v1/...
 ```
 
 The image tag (`ghcr.io/your-org/vectorhub-platform:<env>`) is a placeholder
-— the CI `docker-image` job pushes `ghcr.io/${{ lower(github.repository) }}` (lowercased — container registry names must be lowercase) on
+— the CI `docker-image` job pushes `ghcr.io/<lowercase repo>` (the tags step lowercases `github.repository` in bash — container registry names must be lowercase) on
 main; update the `images:` blocks to your registry.
