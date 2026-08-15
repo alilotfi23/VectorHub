@@ -1,0 +1,43 @@
+# Self-hosted Chroma (dev/staging overlays).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chroma
+spec:
+  serviceName: chroma
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: chroma }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: chroma }
+    spec:
+      containers:
+        - name: chroma
+          image: chromadb/chroma:1.5.9
+          ports:
+            - { containerPort: 8000, name: http }
+          readinessProbe:
+            httpGet: { path: /api/v2/heartbeat, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 2, memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /chroma/chroma }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: { storage: 10Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chroma
+spec:
+  selector: { app: vectorhub, component: chroma }
+  ports:
+    - { port: 8000, targetPort: http }

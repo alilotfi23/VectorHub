@@ -1,0 +1,55 @@
+# Self-hosted Postgres for the control plane. Swap for managed RDS/Cloud SQL
+# by removing this file from the kustomization and patching DATABASE_URL /
+# MIGRATOR_DATABASE_URL in the app/worker/migrate env (see overlays/prod).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: postgres }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - { containerPort: 5432, name: pg }
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: vectorhub-secrets, key: POSTGRES_PASSWORD }
+            - name: POSTGRES_DB
+              value: vectorhub
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "vectorhub"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 1, memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: { storage: 10Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector: { app: vectorhub, component: postgres }
+  ports:
+    - { port: 5432, targetPort: pg }

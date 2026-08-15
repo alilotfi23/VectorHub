@@ -1,0 +1,44 @@
+# Self-hosted Qdrant (dev/staging overlays). Production typically points
+# QDRANT_URL at Qdrant Cloud — that overlay drops this layer.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: qdrant }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: qdrant }
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.19.0
+          ports:
+            - { containerPort: 6333, name: http }
+            - { containerPort: 6334, name: grpc }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 2, memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /qdrant/storage }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: { storage: 10Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+spec:
+  selector: { app: vectorhub, component: qdrant }
+  ports:
+    - { port: 6333, targetPort: http }

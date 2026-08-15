@@ -1,0 +1,49 @@
+# The arq worker: drains the Redis job queue (async batch ingestion) and
+# writes vhk:worker:heartbeat:<id> keys that GET /health's workers check
+# reads. Same image as the app, different command. No HTTP surface — its
+# liveness is the heartbeat, observed via the admin app's /health.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: worker }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: worker }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: migrate
+          image: vectorhub-platform:latest
+          command: ["/usr/local/bin/migrate.sh"]
+          envFrom:
+            - configMapRef: { name: vectorhub-config }
+            - secretRef: { name: vectorhub-secrets }
+          env:
+            - name: MIGRATOR_DATABASE_URL
+              value: postgresql+asyncpg://postgres:$(POSTGRES_PASSWORD)@postgres:5432/vectorhub
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      containers:
+        - name: worker
+          image: vectorhub-platform:latest
+          command: ["python", "-m", "app.workers"]
+          envFrom:
+            - configMapRef: { name: vectorhub-config }
+            - secretRef: { name: vectorhub-secrets }
+          env:
+            - name: POSTGRES_APP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: vectorhub-secrets, key: POSTGRES_APP_PASSWORD }
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://app:$(POSTGRES_APP_PASSWORD)@postgres:5432/vectorhub
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: 4, memory: 2Gi }

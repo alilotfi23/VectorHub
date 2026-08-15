@@ -1,0 +1,59 @@
+# MinIO: async batch staging bucket (vectorhub-batches). Cloud mode can drop
+# this and point BATCH_STORAGE_ENDPOINT at S3-compatible storage instead.
+# A PVC backs it so staged payloads and results survive a pod restart (a
+# restart mid-job would otherwise lose the queued file).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests: { storage: 10Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: minio }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: minio }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: { name: vectorhub-secrets, key: BATCH_STORAGE_ACCESS_KEY }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: vectorhub-secrets, key: BATCH_STORAGE_SECRET_KEY }
+          readinessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: minio-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector: { app: vectorhub, component: minio }
+  ports:
+    - { port: 9000, targetPort: 9000 }

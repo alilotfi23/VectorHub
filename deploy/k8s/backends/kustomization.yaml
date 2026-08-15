@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: vectorhub
+# Milvus is deliberately absent: its standalone deployment needs the etcd +
+# MinIO sidecar trio in-cluster, so v1 targets managed Milvus (Zilliz Cloud)
+# — set MILVUS_URL in the overlay's configmap patch instead.
+resources:
+  - qdrant.yaml
+  - weaviate.yaml
+  - chroma.yaml

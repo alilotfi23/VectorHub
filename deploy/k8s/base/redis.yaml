@@ -1,0 +1,35 @@
+# Redis: rate limiting, auth cache, arq job queue. Swap for managed Redis by
+# removing this file and patching REDIS_URL in vectorhub-config.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: redis }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - { containerPort: 6379, name: redis }
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector: { app: vectorhub, component: redis }
+  ports:
+    - { port: 6379, targetPort: redis }

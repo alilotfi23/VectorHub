@@ -1,0 +1,33 @@
+# Prod overlay: control plane self-hosted, vector DBs managed (no backends
+# layer) — QDRANT_URL / WEAVIATE_URL / MILVUS_URL / CHROMA_URL point at the
+# cloud endpoints in configmap-patch.yaml. Postgres/Redis/MinIO can also be
+# swapped for managed services the same way (drop the StatefulSet/Deployment
+# from base and patch the URLs). Three app replicas behind an HPA up to ten.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: vectorhub-platform
+    newName: ghcr.io/your-org/vectorhub-platform
+    newTag: prod
+patches:
+  - target: { kind: ConfigMap, name: vectorhub-config }
+    path: configmap-patch.yaml
+  - target: { kind: Secret, name: vectorhub-secrets }
+    path: secret-patch.yaml
+  - target: { kind: Deployment, name: app }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target: { kind: HorizontalPodAutoscaler, name: app }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  - target: { kind: Ingress, name: app }
+    path: ingress-host.yaml

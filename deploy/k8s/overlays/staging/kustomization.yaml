@@ -1,0 +1,24 @@
+# Staging overlay: self-hosted backends, JSON logs, two app replicas, and a
+# secret patch that MUST be filled in before applying (or better: replace the
+# Secret resource with external-secrets and drop secret-patch.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ../../backends
+images:
+  - name: vectorhub-platform
+    newName: ghcr.io/your-org/vectorhub-platform
+    newTag: staging
+patches:
+  - target: { kind: ConfigMap, name: vectorhub-config }
+    path: configmap-patch.yaml
+  - target: { kind: Secret, name: vectorhub-secrets }
+    path: secret-patch.yaml
+  - target: { kind: Deployment, name: app }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target: { kind: Ingress, name: app }
+    path: ingress-host.yaml

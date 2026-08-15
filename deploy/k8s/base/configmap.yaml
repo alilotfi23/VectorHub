@@ -1,0 +1,29 @@
+# Non-secret platform configuration. Credentials live in vectorhub-secrets
+# (secret.yaml); anything that would let a reader infer a password does not
+# belong here.
+#
+# The vector-DB URLs below point at the self-hosted StatefulSets in
+# deploy/k8s/backends — the prod overlay patches the managed ones (and any
+# overlay can patch CHROMA_URL etc. for mixed setups).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vectorhub-config
+data:
+  APP_NAME: vectorhub-platform
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  # The admin app (health/metrics) binds the pod's container network. There
+  # is deliberately NO Service/Ingress for port 9091 — probes hit the pod
+  # directly.
+  ADMIN_HOST: "0.0.0.0"
+  ADMIN_PORT: "9091"
+  REDIS_URL: redis://redis:6379/0
+  BATCH_STORAGE_ENDPOINT: http://minio:9000
+  BATCH_STORAGE_BUCKET: vectorhub-batches
+  QDRANT_URL: http://qdrant:6333
+  WEAVIATE_URL: http://weaviate:8080
+  WEAVIATE_GRPC_PORT: "50051"
+  MILVUS_URL: http://milvus:19530
+  CHROMA_URL: http://chroma:8000
+  CORS_ALLOWED_ORIGINS: "*"

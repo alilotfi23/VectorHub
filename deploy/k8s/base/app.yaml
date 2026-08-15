@@ -1,0 +1,121 @@
+# The API: one pod runs both the public app (8000) and the internal admin
+# app (9091, /health + /metrics) in one process — the Prometheus registry is
+# process-local. Probes and the HPA act on the pod directly:
+#
+#   - readiness/liveness hit ADMIN_PORT /health on the container port.
+#   - There is NO Service, Ingress, or NodePort for port 9091 — the admin
+#     boundary is network exposure, exactly like the compose stack.
+#   - The Service exposes only 8000 to the cluster.
+#
+# The migrate initContainer runs deploy/migrate.sh (alembic upgrade head as
+# the migrator role + role-password bootstrap). It is idempotent by design,
+# so running it on every pod start is safe and self-healing: a fresh DB is
+# migrated on first rollout, and a later schema change applies on the next
+# pod (re)creation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vectorhub, component: app }
+  template:
+    metadata:
+      labels: { app: vectorhub, component: app }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: migrate
+          image: vectorhub-platform:latest
+          command: ["/usr/local/bin/migrate.sh"]
+          envFrom:
+            - configMapRef: { name: vectorhub-config }
+            - secretRef: { name: vectorhub-secrets }
+          env:
+            - name: MIGRATOR_DATABASE_URL
+              value: postgresql+asyncpg://postgres:$(POSTGRES_PASSWORD)@postgres:5432/vectorhub
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      containers:
+        - name: app
+          image: vectorhub-platform:latest
+          ports:
+            - { containerPort: 8000, name: http }
+            - { containerPort: 9091, name: admin }
+          readinessProbe:
+            httpGet: { path: /health, port: admin }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: admin }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          envFrom:
+            - configMapRef: { name: vectorhub-config }
+            - secretRef: { name: vectorhub-secrets }
+          env:
+            - name: POSTGRES_APP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: vectorhub-secrets, key: POSTGRES_APP_PASSWORD }
+            # $(VAR) interpolation resolves from earlier entries in the same
+            # container env list, so the app role's password lands in the URL
+            # without duplicating the secret in the configmap.
+            - name: DATABASE_URL
+              value: postgresql+asyncpg://app:$(POSTGRES_APP_PASSWORD)@postgres:5432/vectorhub
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 2, memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+spec:
+  selector: { app: vectorhub, component: app }
+  ports:
+    - { port: 8000, targetPort: http }
+---
+# Scale on CPU (vector query/ingest is CPU-bound; the batch path runs on the
+# worker, so API replicas can stay small). Overlays tune min/max.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  annotations:
+    # Batch enqueue is streamed NDJSON, but the sync vector path can carry
+    # sizable bodies; keep the proxy body cap generous.
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port: { number: 8000 }
