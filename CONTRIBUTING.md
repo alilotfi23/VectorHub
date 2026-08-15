@@ -2,9 +2,9 @@
 
 Thanks for contributing! This guide covers how to work in this repo: setup,
 the architecture rules every change must follow, the test/lint gates, and how
-to commit. It assumes you've read `README.md` (architecture, tenancy matrix,
-hybrid contract, batch data path, error taxonomy) and `CLAUDE.md` (the full
-build spec, tenancy matrix, and progress log).
+to commit. It assumes you've read `README.md` — that document is the source
+of truth for the platform's public contracts (architecture, tenancy matrix,
+hybrid contract, batch data path, error taxonomy).
 
 ## Table of contents
 
@@ -225,15 +225,13 @@ host's `python3`, no uv/deps) and re-run `bash deploy/smoke.sh` to verify.
 
 ## Docs
 
-- **`CLAUDE.md`** holds the build spec, the tenancy matrix, the error-code
-  taxonomy, and the **Progress Log**. At the end of a phase (or a
-  significant chunk of work), tick the phase checkbox and add a progress-log
-  entry (newest on top) describing what landed, committed as `docs: update
-  progress log`.
-- **`README.md`** is the user-facing doc. Keep the tenancy matrix, hybrid
-  contract, batch data path, error taxonomy, and deployment sections in sync
-  when you change behavior — the capability matrix endpoint and the README
-  must not drift.
+- **`README.md`** is the user-facing doc and the source of truth for the
+  public contracts. Keep the tenancy matrix, hybrid contract, batch data
+  path, error taxonomy, and deployment sections in sync when you change
+  behavior — the capability matrix endpoint and the README must not drift.
 - The OpenAPI examples are generated from the live capability matrix
   (`app/schemas/examples.py`) — don't hand-maintain example bodies in
   schemas; change the capability entry instead.
+- The project's internal build spec and progress log are kept local (not
+  published); if you need them, ask a maintainer rather than expecting them
+  in the repository.
