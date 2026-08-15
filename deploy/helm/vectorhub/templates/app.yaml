@@ -1,0 +1,124 @@
+# The API: one pod runs both the public app (8000) and the internal admin
+# app (9091, /health + /metrics) in one process — the Prometheus registry is
+# process-local. Probes hit the admin port on the pod directly; there is NO
+# Service, Ingress, or NodePort for 9091 (the boundary is network exposure).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  replicas: {{ .Values.replicaCount.app }}
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: app
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        {{- include "vectorhub.migrateInit" . | nindent 8 }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { containerPort: 8000, name: http }
+            - { containerPort: {{ .Values.admin.port }}, name: admin }
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          envFrom:
+            {{- include "vectorhub.envFrom" . | nindent 12 }}
+          env:
+            {{- include "vectorhub.appEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  selector:
+    app: vectorhub
+    component: app
+  ports:
+    - { port: 8000, targetPort: http }
+{{- if .Values.hpa.enabled }}
+---
+# CPU HPA: vector query/ingest is CPU-bound; the batch path runs on the
+# worker, so API replicas can stay small.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app
+  minReplicas: {{ .Values.hpa.minReplicas }}
+  maxReplicas: {{ .Values.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.hpa.cpuUtilization }}
+{{- end }}
+{{- if .Values.api.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+  annotations:
+    # Batch enqueue is streamed NDJSON, but the sync vector path can carry
+    # sizable bodies; keep the proxy body cap generous. Extra annotations
+    # merge over this default.
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    {{- with .Values.api.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  rules:
+    - host: {{ .Values.api.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port: { number: 8000 }
+{{- end }}

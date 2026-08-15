@@ -1,0 +1,40 @@
+# The arq worker: drains the Redis job queue (async batch ingestion) and
+# writes vhk:worker:heartbeat:<id> keys that /health's workers check reads.
+# Same image as the app, different command. No HTTP surface — its liveness
+# is the heartbeat, observed via the admin app's /health.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        {{- include "vectorhub.migrateInit" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "app.workers"]
+          envFrom:
+            {{- include "vectorhub.envFrom" . | nindent 12 }}
+          env:
+            {{- include "vectorhub.appEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}

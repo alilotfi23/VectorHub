@@ -1,0 +1,128 @@
+# Default values for the vectorhub chart. The dev defaults mirror the
+# kustomize dev overlay (self-hosted everything, dev placeholder secrets).
+# Override per environment with -f values-<env>.yaml or --set.
+
+image:
+  repository: ghcr.io/your-org/vectorhub-platform
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# The image runs both apps in one process (python -m app.main); scale the
+# API horizontally with replicaCount.app + the HPA, not workers in-process.
+replicaCount:
+  app: 1
+  worker: 1
+
+environment: dev
+logFormat: console
+
+api:
+  port: 8000
+  ingress:
+    enabled: true
+    host: api.example.com
+    # Extra Ingress annotations (e.g. nginx.ingress.kubernetes.io/...).
+    annotations: {}
+
+# Internal admin app — /health and /metrics. The admin port appears in NO
+# Service/Ingress by construction: probes hit the pod directly, and the
+# security boundary is network exposure.
+admin:
+  host: 0.0.0.0
+  port: 9091
+
+corsAllowedOrigins: "*"
+
+jwt:
+  # Dev placeholder — staging/prod must override (the app refuses to boot
+  # with the dev default in ENVIRONMENT=staging/prod).
+  secret: dev-secret-change-me
+  accessTtlMinutes: 15
+  refreshTtlDays: 30
+
+bootstrapPlatformAdminEmails: ""
+
+# --- Control plane ---
+postgres:
+  enabled: true
+  database: vectorhub
+  password: postgres
+  appPassword: app
+  migratorPassword: migrator
+  size: 10Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+  # External managed Postgres: set externalUrl (full SQLAlchemy URL incl.
+  # credentials, for the `app` role) to skip the StatefulSet. If migrations
+  # should still run from the pod, also set migratorUrl (DDL/superuser URL);
+  # otherwise run migrations out-of-band.
+  externalUrl: ""
+  migratorUrl: ""
+
+redis:
+  enabled: true
+  # External managed Redis URL (e.g. redis://user:pass@host:6379/0) to skip
+  # the in-cluster Deployment.
+  externalUrl: ""
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+minio:
+  enabled: true
+  accessKey: minioadmin
+  secretKey: minioadmin
+  bucket: vectorhub-batches
+  size: 10Gi
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+  # Override to point at S3-compatible storage (AWS S3, etc.) instead of the
+  # in-cluster MinIO — the same BATCH_STORAGE_* contract.
+  endpoint: ""
+  accessKeyOverride: ""
+  secretKeyOverride: ""
+
+# --- Self-hosted vector backends (dev/staging). Prod: set backends.enabled
+# = false and point the URLs below at managed endpoints (Qdrant Cloud,
+# Weaviate Cloud, Zilliz Cloud, managed Chroma). Milvus is never self-hosted
+# by this chart — its standalone trio is out of scope, per the kustomize
+# overlays; use managed Milvus via milvusUrl.
+backends:
+  enabled: true
+  size: 10Gi
+  qdrantUrl: http://qdrant:6333
+  weaviateUrl: http://weaviate:8080
+  weaviateGrpcPort: 50051
+  milvusUrl: http://milvus:19530
+  chromaUrl: http://chroma:8000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "2", memory: 2Gi }
+
+app:
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+worker:
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { cpu: "4", memory: 2Gi }
+
+migrate:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+hpa:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  cpuUtilization: 70
+
+sentry:
+  dsn: ""
+
+otelExporterEndpoint: ""

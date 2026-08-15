@@ -1,0 +1,179 @@
+{{- if .Values.backends.enabled }}
+# Self-hosted vector DBs (dev/staging). Set backends.enabled=false and point
+# the *Url values at managed endpoints for prod. Milvus is deliberately
+# absent: its standalone deployment needs the etcd + MinIO sidecar trio
+# in-cluster, so v1 targets managed Milvus (e.g. Zilliz Cloud) via milvusUrl.
+{{- $resources := .Values.backends.resources }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  serviceName: qdrant
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: qdrant
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.19.0
+          ports:
+            - { containerPort: 6333, name: http }
+            - { containerPort: 6334, name: grpc }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            {{- toYaml $resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /qdrant/storage }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.backends.size | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: qdrant
+spec:
+  selector:
+    app: vectorhub
+    component: qdrant
+  ports:
+    - { port: 6333, targetPort: http }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: weaviate
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
+spec:
+  serviceName: weaviate
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: weaviate
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: weaviate
+    spec:
+      containers:
+        - name: weaviate
+          image: semitechnologies/weaviate:1.28.4
+          ports:
+            - { containerPort: 8080, name: http }
+            - { containerPort: 50051, name: grpc }
+          env:
+            - name: PERSISTENCE_DATA_PATH
+              value: /var/lib/weaviate
+            - name: AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED
+              value: "true"
+          readinessProbe:
+            httpGet: { path: /v1/.well-known/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml $resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/weaviate }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.backends.size | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weaviate
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: weaviate
+spec:
+  selector:
+    app: vectorhub
+    component: weaviate
+  ports:
+    - { port: 8080, targetPort: http, name: http }
+    - { port: 50051, targetPort: grpc, name: grpc }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: chroma
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: chroma
+spec:
+  serviceName: chroma
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: chroma
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: chroma
+    spec:
+      containers:
+        - name: chroma
+          image: chromadb/chroma:1.5.9
+          ports:
+            - { containerPort: 8000, name: http }
+          readinessProbe:
+            httpGet: { path: /api/v2/heartbeat, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            {{- toYaml $resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /chroma/chroma }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.backends.size | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chroma
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: chroma
+spec:
+  selector:
+    app: vectorhub
+    component: chroma
+  ports:
+    - { port: 8000, targetPort: http }
+{{- end }}

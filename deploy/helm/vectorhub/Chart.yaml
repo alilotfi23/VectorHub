@@ -1,0 +1,20 @@
+apiVersion: v2
+name: vectorhub
+description: >-
+  Unified REST API over Weaviate, Qdrant, Milvus, and Chroma — Helm
+  packaging of the kustomize manifests (deploy/k8s), with image tags,
+  credentials, replica counts, and managed-vs-self-hosted toggles
+  parameterized as values.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - vector-database
+  - fastapi
+  - rag
+  - weaviate
+  - qdrant
+  - milvus
+  - chroma
+sources:
+  - https://example.com/vectorhub-platform  # replace with the real repo

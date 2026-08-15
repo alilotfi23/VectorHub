@@ -1,0 +1,48 @@
+{{- if .Values.redis.enabled }}
+# In-cluster Redis (rate limiting, auth cache, arq broker). Set
+# redis.externalUrl to use managed Redis instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vectorhub
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: vectorhub
+        component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - { containerPort: 6379, name: redis }
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "vectorhub.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  selector:
+    app: vectorhub
+    component: redis
+  ports:
+    - { port: 6379, targetPort: redis }
+{{- end }}
