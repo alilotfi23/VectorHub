@@ -355,3 +355,12 @@ uv run pytest -q --random-order --random-order-bucket=global -m "not soak and no
 - **CI** (`.github/workflows/ci.yml`): lint + type gates; the suite in **global-bucket randomized order** (the order-dependency hardening gate — seed printed, failures reproduce with `--random-order-seed=<seed>`); Milvus in its own job; a nightly date-seeded full-suite run; the **deploy smoke** (full compose boot + `/health` ok + the all-four-backends API journey) gating the image push; and **Semantic Release** on main — `python-semantic-release` parses Conventional Commits into the next SemVer, stamps `pyproject.toml`, writes `CHANGELOG.md`, tags `vX.Y.Z`, and creates a GitHub release (the released version is also tagged on the ghcr.io image).
 - **Isolation suite**: the security-boundary acceptance gate, three layers (see [Tenancy Matrix](#tenancy-matrix)).
 - **Soak**: `tests/integration/test_batch_soak.py` (`-m soak`) validates the throughput model's bounded-memory and chunk-size predictions on real Qdrant + MinIO.
+
+---
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE). This is copyleft:
+any distributed modification or derivative of this project must be released
+under the GPL v3 as well. (It licenses this project's own code only; the
+libraries it depends on keep their own licenses.)
