@@ -6,7 +6,11 @@
 # admin app's /health to report `status: ok` (Postgres + Redis + worker
 # heartbeats + every registered adapter), asserts the public app 404s on
 # /health (the admin boundary: probes live on the un-published admin port),
-# then tears the stack down. Exits non-zero on any failure with a diagnostic
+# then runs the real-user API journey across all four backends
+# (deploy/smoke/journey.py: register -> collection -> upsert -> query -> filter
+# -> hybrid -> async batch via worker + MinIO -> delete, per backend) to prove
+# the stack doesn't just boot but actually serves the full API surface. Tears
+# the stack down afterwards. Exits non-zero on any failure with a diagnostic
 # dump (compose ps + app/worker/milvus logs).
 #
 # This is the CI deploy gate (`.github/workflows/ci.yml` -> deploy-smoke) and
@@ -89,5 +93,18 @@ if [ "$code" != "404" ]; then
   exit 1
 fi
 echo "  public /health -> 404"
+
+echo "=== [smoke] real-user API journey (all four backends) ==="
+# Health proves the stack BOOTS; the journey proves the API WORKS end to end
+# through the real production path — register/login, per-backend collection
+# create/upsert/query/filter/hybrid, async batch via the arq worker + MinIO
+# staging, delete. deploy/smoke/journey.py is stdlib-only, so the runner
+# host's python3 suffices.
+if ! python3 deploy/smoke/journey.py; then
+  echo "=== [smoke] FAILED: API journey ==="
+  "${COMPOSE[@]}" ps
+  "${COMPOSE[@]}" logs --tail 60 app worker 2>/dev/null || true
+  exit 1
+fi
 
 echo "=== [smoke] PASSED ==="

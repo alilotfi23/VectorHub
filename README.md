@@ -79,7 +79,11 @@ open http://localhost:8000/docs
 
 The stack is healthy when `deploy/smoke.sh` passes — it asserts the internal
 admin `/health` reports `status: ok` (Postgres + Redis + worker heartbeats +
-every adapter) and that the public app 404s on `/health` (the admin boundary).
+every adapter), that the public app 404s on `/health` (the admin boundary),
+**and then runs the real-user API journey** (`deploy/smoke/journey.py`) across
+all four backends — register → collection → upsert → query → filter → hybrid
+→ async batch (real arq worker + MinIO staging) → delete — so the gate proves
+the stack doesn't just boot, it actually serves the full API surface.
 
 **First user:** registration creates a tenant and its owner. Emails listed in
 `BOOTSTRAP_PLATFORM_ADMIN_EMAILS` (set before the first register) become
@@ -343,6 +347,6 @@ uv run pytest -q -m "not soak and not milvus"          # fast gate (Docker neede
 uv run pytest -q --random-order --random-order-bucket=global -m "not soak and not milvus"
 ```
 
-- **CI** (`.github/workflows/ci.yml`): lint + type gates; the suite in **global-bucket randomized order** (the order-dependency hardening gate — seed printed, failures reproduce with `--random-order-seed=<seed>`); Milvus in its own job; a nightly date-seeded full-suite run; the **deploy smoke** (full compose boot + `/health` ok) gating the image push.
+- **CI** (`.github/workflows/ci.yml`): lint + type gates; the suite in **global-bucket randomized order** (the order-dependency hardening gate — seed printed, failures reproduce with `--random-order-seed=<seed>`); Milvus in its own job; a nightly date-seeded full-suite run; the **deploy smoke** (full compose boot + `/health` ok + the all-four-backends API journey) gating the image push.
 - **Isolation suite**: the security-boundary acceptance gate, three layers (see [Tenancy Matrix](#tenancy-matrix)).
 - **Soak**: `tests/integration/test_batch_soak.py` (`-m soak`) validates the throughput model's bounded-memory and chunk-size predictions on real Qdrant + MinIO.
