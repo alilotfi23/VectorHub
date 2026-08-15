@@ -341,6 +341,9 @@ Every failed mutating request (4xx/5xx with a decodable principal) writes an imm
 
 ## Development
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full contributor guide —
+architecture rules, test layers, and commit conventions.
+
 ```bash
 uv sync                      # deps (uv required; uv.lock committed)
 uv run pre-commit install    # ruff check / ruff format / mypy on staged files
