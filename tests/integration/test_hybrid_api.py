@@ -39,10 +39,6 @@ def _vector(seed: int = 0) -> list[float]:
 @pytest.fixture
 async def client(
     session_factory: async_sessionmaker[AsyncSession],
-    chroma_backend: None,
-    qdrant_backend: None,
-    weaviate_backend: None,
-    milvus_backend: None,
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
@@ -108,7 +104,9 @@ async def _hybrid(
     return resp
 
 
-async def test_hybrid_qdrant_sparse_required_and_scoped(client: AsyncClient) -> None:
+async def test_hybrid_qdrant_sparse_required_and_scoped(
+    client: AsyncClient, qdrant_backend: None
+) -> None:
     """Qdrant hybrid: sparse input is required (422 VECTOR_SPARSE_REQUIRED)
     and, with it, returns only the caller's rows."""
     reg = await _register(client, "hyb-q")
@@ -142,7 +140,10 @@ async def test_hybrid_qdrant_sparse_required_and_scoped(client: AsyncClient) -> 
     assert all(r["metadata"]["_tenant_probe"] == "me" for r in results)
 
 
-async def test_hybrid_milvus_sparse_required_and_scoped(client: AsyncClient) -> None:
+@pytest.mark.milvus
+async def test_hybrid_milvus_sparse_required_and_scoped(
+    client: AsyncClient, milvus_backend: None
+) -> None:
     """Milvus hybrid: sparse input is required (422 VECTOR_SPARSE_REQUIRED)
     and, with it, returns only the caller's rows."""
     reg = await _register(client, "hyb-m")
@@ -176,7 +177,9 @@ async def test_hybrid_milvus_sparse_required_and_scoped(client: AsyncClient) -> 
     assert all(r["metadata"]["_tenant_probe"] == "me" for r in results)
 
 
-async def test_hybrid_weaviate_text_required_and_scoped(client: AsyncClient) -> None:
+async def test_hybrid_weaviate_text_required_and_scoped(
+    client: AsyncClient, weaviate_backend: None
+) -> None:
     """Weaviate hybrid: query_text is required (422) and scopes to the
     caller's shard."""
     reg = await _register(client, "hyb-w")
@@ -201,7 +204,7 @@ async def test_hybrid_weaviate_text_required_and_scoped(client: AsyncClient) -> 
     assert all(r["metadata"]["_tenant_probe"] == "me" for r in results)
 
 
-async def test_hybrid_chroma_unsupported(client: AsyncClient) -> None:
+async def test_hybrid_chroma_unsupported(client: AsyncClient, chroma_backend: None) -> None:
     """Chroma has no hybrid: 400 VALIDATION_UNSUPPORTED_OPERATION with
     details.capability naming hybrid_search."""
     reg = await _register(client, "hyb-c")
@@ -220,7 +223,7 @@ async def test_hybrid_chroma_unsupported(client: AsyncClient) -> None:
     assert body["details"]["capability"] == "hybrid_search"
 
 
-async def test_hybrid_alpha_bounds(client: AsyncClient) -> None:
+async def test_hybrid_alpha_bounds(client: AsyncClient, qdrant_backend: None) -> None:
     """alpha is normalized [0,1]; out-of-range is a 422 (schema)."""
     reg = await _register(client, "hyb-a")
     headers = _auth_headers(reg["access_token"])
@@ -239,7 +242,7 @@ async def test_hybrid_alpha_bounds(client: AsyncClient) -> None:
     assert resp.status_code == 422, resp.text
 
 
-async def test_hybrid_sparse_shape_validated(client: AsyncClient) -> None:
+async def test_hybrid_sparse_shape_validated(client: AsyncClient, qdrant_backend: None) -> None:
     """Sparse vectors are shape-validated: non-ascending/duplicate indices are
     a 422, not a backend round-trip."""
     reg = await _register(client, "hyb-s")
@@ -270,7 +273,9 @@ async def test_hybrid_sparse_shape_validated(client: AsyncClient) -> None:
     assert resp2.status_code == 422, resp2.text
 
 
-async def test_qdrant_payload_filtering_via_query(client: AsyncClient) -> None:
+async def test_qdrant_payload_filtering_via_query(
+    client: AsyncClient, qdrant_backend: None
+) -> None:
     """Qdrant's payload filters work through the platform DSL: equality,
     range, and $in narrow the result set."""
     reg = await _register(client, "hyb-f")
@@ -295,7 +300,10 @@ async def test_qdrant_payload_filtering_via_query(client: AsyncClient) -> None:
     assert {r["id"] for r in ranged.json()["results"]} == {"doc-1", "doc-2"}
 
 
-async def test_milvus_payload_filtering_via_query(client: AsyncClient) -> None:
+@pytest.mark.milvus
+async def test_milvus_payload_filtering_via_query(
+    client: AsyncClient, milvus_backend: None
+) -> None:
     """Milvus JSON-field filters work through the platform DSL: equality and
     range narrow the result set (metadata["key"] exprs)."""
     reg = await _register(client, "hyb-mf")
@@ -320,7 +328,9 @@ async def test_milvus_payload_filtering_via_query(client: AsyncClient) -> None:
     assert {r["id"] for r in ranged.json()["results"]} == {"doc-1", "doc-2"}
 
 
-async def test_weaviate_metadata_filtering_unsupported(client: AsyncClient) -> None:
+async def test_weaviate_metadata_filtering_unsupported(
+    client: AsyncClient, weaviate_backend: None
+) -> None:
     """Weaviate is schema-first: metadata filtering is rejected with the typed
     capability error rather than silently ignored."""
     reg = await _register(client, "hyb-wf")

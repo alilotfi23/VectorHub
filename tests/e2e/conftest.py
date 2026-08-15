@@ -21,12 +21,13 @@ from app.main import app
 async def client(
     session_factory: async_sessionmaker[AsyncSession],
     redis_url: str,  # cache-on for the e2e layer (the production path)
-    chroma_backend: None,  # Layer 3 runs the real platform against real vector backends
-    qdrant_backend: None,
-    weaviate_backend: None,
-    milvus_backend: None,
     minio_url: str,  # batch staging (E5 enqueues through the real route)
 ) -> AsyncGenerator[AsyncClient, None]:
+    # The vector-backend fixtures are NOT listed here: each isolation case
+    # boots only the backend its `backend` parameter needs (see the autouse
+    # _boot_backend fixture in test_tenant_isolation.py), so a chroma-only
+    # case never pays for the Milvus trio — and the milvus-marked cases can
+    # run in their own CI job with the trio deselected from the main gate.
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield session

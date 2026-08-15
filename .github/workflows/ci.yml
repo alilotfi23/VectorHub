@@ -6,9 +6,9 @@ on:
   pull_request:
 
 env:
-  # Testcontainers needs Docker; the full integration/e2e suites boot real
-  # Postgres, Redis, MinIO, Chroma, Qdrant, Weaviate and the Milvus trio
-  # (etcd + MinIO sidecars).
+  # Testcontainers needs Docker; the integration/e2e suites boot real
+  # Postgres, Redis, MinIO, Chroma, Qdrant, Weaviate, and (in the dedicated
+  # milvus job) the Milvus trio (etcd + MinIO sidecars).
   PYTHON_VERSION: "3.13"
 
 jobs:
@@ -49,10 +49,36 @@ jobs:
         # re-exporting session-scoped fixtures) fails here instead of
         # silently passing in a fixed order. pytest-random-order prints the
         # seed used — reproduce a failure with --random-order-seed=<seed>.
-        # The soak (100k-vector ingest, throughput validation) is deselected:
-        # it adds minutes and is not an order-dependency check.
+        # The soak (100k-vector ingest, throughput validation) and the
+        # milvus-marked tests (the Milvus trio — its own job below, so a
+        # Milvus timeout can't block the rest of the pipeline) are
+        # deselected.
         run: |
           uv run pytest -q \
             --random-order \
             --random-order-bucket=global \
-            -m "not soak"
+            -m "not soak and not milvus"
+
+  tests-milvus:
+    name: tests (Milvus trio)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Run milvus-marked suite
+        # Milvus standalone (etcd + MinIO sidecars) is the heaviest container
+        # set in the suite, so it runs in its own job per the deployment
+        # policy: a Milvus startup timeout must not block the rest of the
+        # pipeline. Still randomized, so the order-dependency gate holds for
+        # these tests too.
+        run: |
+          uv run pytest -q \
+            --random-order \
+            --random-order-bucket=global \
+            -m "milvus"

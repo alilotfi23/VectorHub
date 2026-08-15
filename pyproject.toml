@@ -104,4 +104,7 @@ asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 # 100k-vector ingest soak — validates the Chroma throughput floor (~10-30 s
 # per the batch-throughput design); runs in the adapter testcontainers job.
-markers = ["soak: 100k-vector adapter ingest soak (throughput floor)"]
+markers = [
+    "soak: 100k-vector adapter ingest soak (throughput floor)",
+    "milvus: requires the Milvus standalone trio (etcd + MinIO sidecars) — runs in its own CI job per the deployment policy",
+]

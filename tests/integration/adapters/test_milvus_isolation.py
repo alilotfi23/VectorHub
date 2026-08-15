@@ -1,5 +1,11 @@
 """Layer 1 — Milvus adapter isolation suite (real backend via testcontainers).
 
+Entire module runs in its own CI job: the Milvus trio (etcd + MinIO
+sidecars) is the heaviest container set in the suite, so these tests carry
+the ``milvus`` marker and are deselected from the main random-order CI job
+(see .github/workflows/ci.yml) — a Milvus startup timeout must not block the
+rest of the pipeline.
+
 The security-boundary acceptance gate from the isolation design doc (§3):
 shared contract cases C1–C6 plus the per-backend mechanism tests. All data is
 **indistinguishable** — identical IDs and identical dense/sparse vectors
@@ -33,6 +39,8 @@ from pymilvus import AsyncMilvusClient, exceptions
 from app.adapters.base import SparseVector, VectorRecord
 from app.adapters.milvus_adapter import MilvusAdapter
 from app.adapters.registry import registry
+
+pytestmark = pytest.mark.milvus
 
 DIM = 8
 _QUERY = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0]

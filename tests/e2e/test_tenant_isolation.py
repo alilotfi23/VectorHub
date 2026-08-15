@@ -33,7 +33,14 @@ from tests.e2e.helpers import (
     _unique,
 )
 
-BACKENDS = ("chroma", "qdrant", "weaviate", "milvus")
+# The milvus variants carry the marker so the trio (etcd + MinIO sidecars)
+# runs in its own CI job, deselected from the main random-order gate.
+BACKENDS = (
+    "chroma",
+    "qdrant",
+    "weaviate",
+    pytest.param("milvus", marks=pytest.mark.milvus),
+)
 DIM = 8
 
 
@@ -56,6 +63,19 @@ def _record(rid: str, probe: str, seed: int = 0, *, sparse: bool = False) -> dic
     if sparse:
         record["sparse_vector"] = _sparse(seed)
     return record
+
+
+@pytest.fixture(autouse=True)
+def _boot_backend(request: pytest.FixtureRequest, backend: str) -> None:
+    """Boot only the vector backend this parametrized case needs — the e2e
+    client no longer pulls all four. A chroma-only case must not pay for the
+    Milvus trio, and the milvus cases must be movable to their own CI job.
+
+    Sync on purpose: dynamically fetching an async backend fixture from an
+    async fixture would call the asyncio Runner from inside the running
+    loop (RuntimeError); from the sync hook path the fetch goes through the
+    normal async-fixture machinery."""
+    request.getfixturevalue(f"{backend}_backend")
 
 
 @pytest.fixture
