@@ -21,6 +21,7 @@ from tests.integration.conftest import (  # noqa: F401
     db_url,
     milvus_backend,
     milvus_url,
+    minio_url,
     qdrant_backend,
     qdrant_url,
     redis_url,
@@ -38,6 +39,7 @@ async def client(
     qdrant_backend: None,  # noqa: F811
     weaviate_backend: None,  # noqa: F811
     milvus_backend: None,  # noqa: F811
+    minio_url: str,  # noqa: F811 — batch staging (E5 enqueues through the real route, which stages to object storage)
 ) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:

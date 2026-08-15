@@ -13,7 +13,7 @@ import pytest
 
 import app.workers.heartbeat as heartbeat_module
 from app.core.config import get_settings
-from app.workers import WorkerSettings, _on_shutdown, _on_startup, ping
+from app.workers import WorkerSettings, _on_shutdown, _on_startup, ping, run_batch_ingest
 from app.workers.heartbeat import WORKER_HEARTBEAT_PREFIX, HeartbeatLoop, write_heartbeat
 
 
@@ -66,10 +66,10 @@ async def test_heartbeat_loop_refreshes_on_cadence(
 
 
 async def test_worker_settings_scaffold() -> None:
-    """The worker is arq-runnable: hooks + redis settings present, and at
-    least one function registered (arq refuses to start a worker with no
-    functions or cron jobs)."""
-    assert WorkerSettings.functions == [ping]
+    """The worker is arq-runnable: hooks + redis settings present, and the
+    queue-facing functions are registered (arq refuses to start a worker
+    with no functions or cron jobs)."""
+    assert set(WorkerSettings.functions) == {ping, run_batch_ingest}
     assert WorkerSettings.on_startup is _on_startup
     assert WorkerSettings.on_shutdown is _on_shutdown
     assert WorkerSettings.redis_settings is not None

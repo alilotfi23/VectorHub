@@ -13,6 +13,7 @@ from testcontainers.core.container import DockerContainer
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
+import app.middleware.audit as audit_module
 import app.middleware.rate_limit as rate_limit_module
 from app.core.cache import close_redis
 from app.core.config import get_settings
@@ -26,6 +27,7 @@ WEAVIATE_IMAGE = "semitechnologies/weaviate:1.28.4"  # matches weaviate-client 4
 MILVUS_ETCD_IMAGE = "quay.io/coreos/etcd:v3.5.25"
 MILVUS_MINIO_IMAGE = "minio/minio:RELEASE.2024-05-28T17-19-04Z"
 MILVUS_IMAGE = "milvusdb/milvus:v3.0.0"
+MINIO_IMAGE = "minio/minio:RELEASE.2024-05-28T17-19-04Z"
 
 MIGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "alembic"))
 APP_ROLE_PASSWORD = "app_test_password"
@@ -103,15 +105,19 @@ async def session_factory(
 ) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
     engine = create_async_engine(db_url, pool_pre_ping=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    # The rate-limit middleware resolves tenant/key rate config through its
-    # own session factory; point it at the test DB so every authenticated
-    # request doesn't attempt the default (dead) engine. Restored on teardown.
+    # The rate-limit and audit middlewares resolve through their own session
+    # factories; point both at the test DB so every authenticated request
+    # (and every failed-write audit row) hits the migrated test Postgres
+    # instead of the default (dead) engine. Restored on teardown.
     original_factory = rate_limit_module.session_factory
+    original_audit_factory = audit_module.session_factory
     rate_limit_module.session_factory = factory
+    audit_module.session_factory = factory
     try:
         yield factory
     finally:
         rate_limit_module.session_factory = original_factory
+        audit_module.session_factory = original_audit_factory
         await engine.dispose()
 
 
@@ -219,6 +225,55 @@ async def weaviate_backend(weaviate_url: tuple[str, int]) -> AsyncGenerator[None
     registry.register("weaviate", WeaviateAdapter, url=url, grpc_port=grpc_port)
     yield
     registry.register("weaviate", WeaviateAdapter)
+
+
+@pytest.fixture(scope="session")
+async def minio_url() -> AsyncGenerator[str, None]:
+    """MinIO testcontainer for batch staging (the Phase 6 async-batch path;
+    the same image the Milvus trio uses as its object-store sidecar). Yields
+    the S3 endpoint URL; credentials are the defaults (minioadmin)."""
+    with (
+        DockerContainer(MINIO_IMAGE)
+        .with_exposed_ports(9000)
+        .with_env("MINIO_ACCESS_KEY", "minioadmin")
+        .with_env("MINIO_SECRET_KEY", "minioadmin")
+        .with_command("minio server /minio_data --console-address :9001")
+    ) as container:
+        url = f"http://{container.get_container_host_ip()}:{container.get_exposed_port(9000)}"
+        import boto3  # type: ignore[import-untyped]
+
+        client = boto3.client(
+            "s3",
+            endpoint_url=url,
+            aws_access_key_id="minioadmin",
+            aws_secret_access_key="minioadmin",
+            region_name="us-east-1",
+        )
+        for _ in range(60):
+            try:
+                client.list_buckets()
+                break
+            except Exception:
+                await asyncio.sleep(0.5)
+        else:
+            raise RuntimeError("MinIO testcontainer did not become ready in time")
+        # Point BATCH_STORAGE_* at the test container so every BatchStorage()
+        # constructed from settings (e.g. the route's JobService) hits MinIO
+        # here — the production env-driven path, exercised for real.
+        os.environ["BATCH_STORAGE_ENDPOINT"] = url
+        os.environ["BATCH_STORAGE_ACCESS_KEY"] = "minioadmin"
+        os.environ["BATCH_STORAGE_SECRET_KEY"] = "minioadmin"
+        os.environ["BATCH_STORAGE_BUCKET"] = "vectorhub-batches"
+        get_settings.cache_clear()
+        yield url
+        for var in (
+            "BATCH_STORAGE_ENDPOINT",
+            "BATCH_STORAGE_ACCESS_KEY",
+            "BATCH_STORAGE_SECRET_KEY",
+            "BATCH_STORAGE_BUCKET",
+        ):
+            os.environ.pop(var, None)
+        get_settings.cache_clear()
 
 
 @pytest.fixture(scope="session")

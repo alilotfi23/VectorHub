@@ -11,11 +11,14 @@ container-free, and pins the contract the real adapters must honor:
   (``col_<uuid>``), and the principal's tenant is what reaches the adapter.
 - R3 — the record envelopes have no ``tenant_id``/owner field (forged ones
   are rejected at the schema; the wire-level half lives in the API suites).
-
-R4 (batch scoping) lands with the Phase 6 async-batch path.
+- R4 — batch enqueue scoping (Phase 6): a foreign collection name 404s at
+  enqueue before any staging, and an own-collection enqueue stages under
+  ``{principal_tenant_id}/{job_id}.jsonl`` — no other tenant can address
+  the object, and the worker receives only ``{job_id, payload_key}``.
 """
 
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -37,6 +40,7 @@ from app.db.models import Tenant, User
 from app.schemas.collections import CollectionCreateRequest
 from app.schemas.vectors import QueryRequest, VectorRecordIn, VectorUpsertRequest
 from app.services.collection_service import CollectionService
+from app.services.job_service import JobService
 from app.services.vector_service import VectorService
 
 
@@ -294,3 +298,89 @@ def test_r3_record_envelopes_have_no_tenant_or_owner_field() -> None:
         assert "owner_id" not in declared
     # The unit schema suite (test_schemas.py) proves the 422 rejection for
     # every request envelope, including these.
+
+
+# --- R4 — batch enqueue scoping (Phase 6 async-batch path) ---
+
+
+class RecordingStorage:
+    """Container-free stand-in for BatchStorage — R4's 'stub/JobService
+    records the key'. Records staged keys instead of touching MinIO/S3;
+    drains the stream so uploads behave like the real path."""
+
+    bucket = "test-bucket"
+
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+        self.uploads = 0
+
+    async def ensure_bucket(self) -> None:
+        return None
+
+    async def upload_stream(self, key: str, chunks: AsyncIterator[bytes]) -> int:
+        self.keys.append(key)
+        self.uploads += 1
+        total = 0
+        async for chunk in chunks:
+            total += len(chunk)
+        return total
+
+    async def delete(self, key: str) -> None:
+        return None
+
+
+async def _ndjson_line(rid: str = "doc-1") -> AsyncIterator[bytes]:
+    yield (b'{"id": "' + rid.encode() + b'", "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]}\n')
+
+
+async def test_r4_batch_enqueue_foreign_collection_404s_before_staging(
+    db: AsyncSession, stub_backend: RecordingStubAdapter
+) -> None:
+    """Enqueuing a batch against another tenant's collection fails at
+    enqueue — COLLECTION_NOT_FOUND, the no-oracle 404 — before any byte is
+    staged, before any arq handoff, and before any adapter call."""
+    principal_a = await _make_principal(db)
+    principal_b = await _make_principal(db)
+    await _create_products(db, principal_a)
+    stub_backend.calls.clear()
+
+    storage = RecordingStorage()
+    staged: list[str] = []
+
+    async def fake_enqueue(job_id: str, payload_key_value: str) -> None:
+        staged.append(payload_key_value)
+
+    with pytest.raises(AppError) as exc:
+        await JobService(db, storage=storage, enqueue=fake_enqueue).create_batch_ingest(
+            principal_b, name="products", chunks=_ndjson_line()
+        )
+    assert exc.value.code == ErrorCode.COLLECTION_NOT_FOUND
+    assert storage.keys == []  # nothing staged
+    assert staged == []  # nothing enqueued
+    assert stub_backend.calls == []  # nothing reached the adapter
+
+
+async def test_r4_batch_staging_key_is_tenant_scoped(
+    db: AsyncSession, stub_backend: RecordingStubAdapter
+) -> None:
+    """Own-collection enqueue stages at ``{tenant_id}/{job_id}.jsonl`` — the
+    principal's tenant prefix, so no other tenant can address the object —
+    and the worker receives only ``{job_id, payload_key}``, never the
+    payload or any tenant-foreign identity."""
+    principal = await _make_principal(db)
+    await _create_products(db, principal)
+
+    storage = RecordingStorage()
+    handed: list[tuple[str, str]] = []
+
+    async def fake_enqueue(job_id: str, payload_key_value: str) -> None:
+        handed.append((job_id, payload_key_value))
+
+    job = await JobService(db, storage=storage, enqueue=fake_enqueue).create_batch_ingest(
+        principal, name="products", chunks=_ndjson_line()
+    )
+    (key,) = storage.keys
+    assert key == f"{principal.tenant_id}/{job.id}.jsonl"
+    assert handed == [(job.id, key)]  # the arq handoff is {job_id, payload_key} only
+    assert job.tenant_id == principal.tenant_id
+    assert storage.uploads == 1

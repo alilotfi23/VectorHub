@@ -12,7 +12,10 @@ construction.
 
 E6 (hybrid) activates per backend: qdrant + milvus (sparse+vector), weaviate
 (text+vector), chroma (unsupported -> 400 VALIDATION_UNSUPPORTED_OPERATION).
-E5 (async batch) lands with Phase 6.
+E5 (async batch) — enqueue scoping plus the JOB_NOT_FOUND no-oracle — runs
+through the real Phase 6 enqueue route (MinIO staging via the shared
+``minio_url`` fixture); the full worker round-trip lives in the integration
+batch suite.
 """
 
 from collections.abc import AsyncGenerator
@@ -235,6 +238,62 @@ async def test_e4_vector_id_collision_via_api(
     results = await _query(client, headers_b, "shared", top_k=10)
     assert len(results) == 1
     assert results[0]["metadata"]["_tenant_probe"] == "B"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("auth", AUTH_STYLES)
+async def test_e5_batch_path_scoping_via_api(
+    client: AsyncClient,
+    principals: dict[str, dict[str, Any]],
+    backend: str,
+    auth: str,
+) -> None:
+    """Async-batch scoping (E5). Three proofs: (1) B enqueues against a name
+    only A holds -> 404 COLLECTION_NOT_FOUND at enqueue (before any staging);
+    (2) with the *same* name under both tenants, B's enqueue resolves B's own
+    collection (202) — tenant-scoped resolution holds on the batch path; (3)
+    A's GET /jobs/{id} on B's job returns the same no-oracle 404 as an id
+    that exists nowhere, so job ids can't leak existence across tenants."""
+    headers_a = await _principal_headers(client, principals["a"]["reg"], auth)
+    headers_b = await _principal_headers(client, principals["b"]["reg"], auth)
+    await _create_collection(client, headers_a, "a-private", backend)
+    await _create_collection(client, headers_a, "batches", backend)
+    await _create_collection(client, headers_b, "batches", backend)
+
+    line = b'{"id": "doc-1", "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]}\n'
+    ndjson_headers = {**headers_b, "content-type": "application/x-ndjson"}
+
+    # (1) A name only A holds is unresolvable for B — fail-closed 404.
+    foreign = await client.post(
+        f"{API}/collections/a-private/vectors/batch",
+        content=line * 3,
+        headers=ndjson_headers,
+    )
+    assert foreign.status_code == 404, foreign.text
+    assert foreign.json()["error_code"] == "COLLECTION_NOT_FOUND"
+
+    # (2) Same name under both tenants: B's enqueue lands on B's own row.
+    mine = await client.post(
+        f"{API}/collections/batches/vectors/batch",
+        content=line * 3,
+        headers=ndjson_headers,
+    )
+    assert mine.status_code == 202, mine.text
+    job_id = mine.json()["job_id"]
+
+    own = await client.get(f"{API}/jobs/{job_id}", headers=headers_b)
+    assert own.status_code == 200, own.text
+    assert own.json()["id"] == job_id
+
+    # (3) A probing B's job id gets the same no-oracle 404 as an unknown id.
+    await _assert_no_existence_oracle(
+        client,
+        method="GET",
+        real_path=f"{API}/jobs/{job_id}",
+        missing_path=f"{API}/jobs/{_unique('job')}",
+        headers=headers_a,
+        expected="JOB_NOT_FOUND",
+    )
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
