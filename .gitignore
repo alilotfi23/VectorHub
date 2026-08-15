@@ -46,3 +46,7 @@ nohup.out
 
 # Client/agent session state
 .freebuff/
+
+# Agent design docs + session spec (kept local, not published to GitHub)
+docs/superpowers/
+CLAUDE.md
