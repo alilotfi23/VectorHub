@@ -82,6 +82,10 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app", "tests", "alembic"]
+# deploy/ holds standalone scripts (deploy/loadtest/locustfile.py runs with
+# `uvx locust`, whose package isn't a project dependency); they are not part
+# of the app/test packages and are intentionally not type-checked.
+exclude = ["deploy/"]
 
 [[tool.mypy.overrides]]
 # testcontainers ships no type stubs (import-untyped under strict).
