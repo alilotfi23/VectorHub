@@ -1,0 +1,265 @@
+# Full local/dev stack: the platform API + worker against self-hosted
+# Postgres, Redis, MinIO (batch staging + Milvus sidecar), and all four
+# vector backends.
+#
+# Secrets are dev defaults via ${VAR:-default} interpolation — override with
+# a `.env` next to this file (see the root .env.example) or shell exports.
+# The production posture lives in deploy/k8s; docker-compose.cloud.yml is the
+# managed-endpoint variant (cloud vector DBs, no local trio).
+#
+# The admin app (ADMIN_HOST:ADMIN_PORT, /health + /metrics) is deliberately
+# NOT published: it runs inside the app container for probes/healthchecks but
+# is unreachable from the host. Only the public API port (8000) is published.
+name: vectorhub
+
+x-app-env: &app-env
+  ENVIRONMENT: ${ENVIRONMENT:-dev}
+  LOG_FORMAT: ${LOG_FORMAT:-console}
+  API_HOST: 0.0.0.0
+  API_PORT: 8000
+  ADMIN_HOST: 0.0.0.0
+  ADMIN_PORT: 9091
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+  BOOTSTRAP_PLATFORM_ADMIN_EMAILS: ${BOOTSTRAP_PLATFORM_ADMIN_EMAILS:-}
+  DATABASE_URL: postgresql+asyncpg://app:${POSTGRES_APP_PASSWORD:-app}@postgres:5432/vectorhub
+  REDIS_URL: redis://redis:6379/0
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-"*"}
+  BATCH_STORAGE_ENDPOINT: http://minio:9000
+  BATCH_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  BATCH_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  BATCH_STORAGE_BUCKET: vectorhub-batches
+  QDRANT_URL: http://qdrant:6333
+  WEAVIATE_URL: http://weaviate:8080
+  WEAVIATE_GRPC_PORT: 50051
+  MILVUS_URL: http://milvus:19530
+  CHROMA_URL: http://chroma:8000
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: vectorhub
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vectorhub"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # Shared MinIO: batch-job staging bucket (vectorhub-batches) AND the Milvus
+  # standalone sidecar. Milvus provisions its own buckets on first boot.
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+
+  # One-shot: create the async batch staging bucket (idempotent). The app and
+  # worker depend on this completing, so the enqueue path never races the
+  # bucket's existence.
+  mc-init:
+    image: minio/mc:latest
+    entrypoint: /bin/sh -c "mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} && mc mb --ignore-existing local/${BATCH_STORAGE_BUCKET:-vectorhub-batches}"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # The qdrant image ships no curl/wget — bash /dev/tcp + a raw HTTP GET
+    # on /healthz is the portable probe.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333; printf 'GET /healthz HTTP/1.0\r\n\r\n' >&3; head -c 100 <&3 | grep -q 200"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "6333:6333"
+    restart: unless-stopped
+
+  weaviate:
+    image: semitechnologies/weaviate:1.28.4
+    environment:
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+    volumes:
+      - weaviate-data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/v1/.well-known/ready >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    volumes:
+      - chroma-data:/chroma/chroma
+    # The chroma image is an embedded Debian runtime with no python/curl —
+    # bash /dev/tcp + a raw HTTP GET on the v2 heartbeat is the portable probe.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000; printf 'GET /api/v2/heartbeat HTTP/1.0\r\n\r\n' >&3; head -c 100 <&3 | grep -q 200"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # Host port 8002 for debugging (the API's public port is also 8000; the
+    # app reaches Chroma at chroma:8000 over the compose network, so the
+    # host mapping only needs to not collide).
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+
+  # --- Milvus standalone trio: etcd + MinIO sidecars (shared minio above) ---
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd-data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v3.0.0
+    command: ["milvus", "run", "standalone"]
+    # Exactly the env-var configuration the testcontainer trio uses (the
+    # image's default config + these two overrides is proven in the Milvus
+    # integration suite). The image's defaults expect etcd without auth
+    # (its own auth attempts log benign retry warnings) and MinIO root
+    # minioadmin/minioadmin — keep the shared minio service's default creds
+    # untouched, or override them here too via MINIO_ACCESS_KEY/MINIO_SECRET_KEY.
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    ports:
+      - "19530:19530"
+    restart: unless-stopped
+
+  # --- Control plane: one-shot migration, then app + worker ---
+  migrate:
+    image: vectorhub-platform:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["/usr/local/bin/migrate.sh"]
+    environment:
+      MIGRATOR_DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/vectorhub
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:-app}
+      POSTGRES_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:-migrator}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: vectorhub-platform:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mc-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      weaviate:
+        condition: service_started
+      chroma:
+        condition: service_started
+      milvus:
+        condition: service_started
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  worker:
+    image: vectorhub-platform:dev
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.workers"]
+    environment: *app-env
+    # The image HEALTHCHECK probes the admin app's /health, which only the
+    # API process serves. The worker's liveness is its own signal: the
+    # vhk:worker:heartbeat key, observed via GET /health's workers check.
+    healthcheck:
+      disable: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mc-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  minio-data:
+  qdrant-data:
+  weaviate-data:
+  chroma-data:
+  etcd-data:
+  milvus-data:
