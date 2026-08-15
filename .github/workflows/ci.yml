@@ -63,7 +63,6 @@ jobs:
             --random-order \
             --random-order-bucket=global \
             -m "not soak and not milvus"
-
   tests-milvus:
     name: tests (Milvus trio)
     runs-on: ubuntu-latest
@@ -87,7 +86,6 @@ jobs:
             --random-order \
             --random-order-bucket=global \
             -m "milvus"
-
   helm-validate:
     # The Helm chart (deploy/helm/vectorhub) wraps the kustomize manifests;
     # keep it honest: lint plus render in the default, managed-control-plane,
@@ -186,7 +184,7 @@ jobs:
           # Repo names may be mixed-case (e.g. VectorHub) but container
           # registry names must be lowercase. GitHub Actions expressions have
           # no lowercase function, so lowercase in bash (runs after GitHub
-          # substitutes the ${{ }} expressions).
+          # substitutes the double-curly-brace expressions).
           REPO="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
           TAGS="ghcr.io/${REPO}:latest
           ghcr.io/${REPO}:${{ github.sha }}"
