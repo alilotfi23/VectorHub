@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly 03:00 UTC: the full-suite date-seeded random-order job below.
+  # Cron events only trigger the workflow for jobs explicitly gated on
+  # `github.event_name == 'schedule'` — push/PR runs ignore them.
+  schedule:
+    - cron: "0 3 * * *"
 
 env:
   # Testcontainers needs Docker; the integration/e2e suites boot real
@@ -82,3 +87,36 @@ jobs:
             --random-order \
             --random-order-bucket=global \
             -m "milvus"
+
+  tests-nightly-seed:
+    # Nightly full-permutation exploration: every push/PR already samples a
+    # fresh random permutation (pytest-random-order derives the seed from
+    # the random source), but a given bug only surfaces under the specific
+    # permutations that happen to run. The cron re-runs the FULL suite —
+    # milvus trio and soak included, which the per-push jobs deselect —
+    # with a seed derived from the date: fixed per run (reproducible, so a
+    # failure can be re-run with --random-order-seed=<seed>) and different
+    # every night, so the permutation space is explored over time. The
+    # heavy-milvus-isolation policy is relaxed here because this is a
+    # background job, not a gate: a timeout costs a nightly run, not the
+    # pipeline.
+    if: github.event_name == 'schedule'
+    name: tests (nightly random seed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Sync dependencies
+        run: uv sync --frozen
+      - name: Run full suite with date-derived seed
+        run: |
+          SEED="$(date +%Y%m%d)"
+          echo "Exploring permutation for seed: $SEED"
+          uv run pytest -q \
+            --random-order \
+            --random-order-bucket=global \
+            --random-order-seed="$SEED"
